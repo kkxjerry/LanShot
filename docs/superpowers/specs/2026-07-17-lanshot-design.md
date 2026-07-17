@@ -118,4 +118,4 @@ User-visible states are limited to: ready, capturing, uploading, completed, rece
 
 ## Delivery
 
-The project will include an Xcode app target, test targets, a concise setup guide, and an ad-hoc signed development build suitable for installing on the two private Macs. The first release favors direct installation and simple LAN operation over App Store distribution.
+The project will include a Swift Package executable target that opens directly in Xcode, test targets, a script that assembles and signs `LanShot.app`, a concise setup guide, and a development build suitable for installing on the two private Macs. The first release favors direct installation and simple LAN operation over App Store distribution.

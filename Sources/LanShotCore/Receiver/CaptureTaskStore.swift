@@ -1,6 +1,18 @@
 import Foundation
 
 public actor CaptureTaskStore {
+    public enum CreateResult: Equatable, Sendable {
+        case created(CaptureTaskResponse)
+        case reused(CaptureTaskResponse)
+
+        public var response: CaptureTaskResponse {
+            switch self {
+            case .created(let response), .reused(let response):
+                return response
+            }
+        }
+    }
+
     public enum CompletionResult: Equatable, Sendable {
         case stored(CaptureTaskResponse)
         case duplicate(CaptureTaskResponse)
@@ -44,12 +56,16 @@ public actor CaptureTaskStore {
     }
 
     public func createOrReuse() -> CaptureTaskResponse {
+        createOrReuseResult().response
+    }
+
+    public func createOrReuseResult() -> CreateResult {
         expireIfNeeded()
 
         if let activeID, let record = records[activeID] {
             switch record.status {
             case .pending, .running:
-                return record.response
+                return .reused(record.response)
             case .completed, .failed, .expired:
                 self.activeID = nil
             }
@@ -65,7 +81,7 @@ public actor CaptureTaskStore {
         )
         records[id] = record
         activeID = id
-        return record.response
+        return .created(record.response)
     }
 
     private func makeUniqueID() -> UUID {

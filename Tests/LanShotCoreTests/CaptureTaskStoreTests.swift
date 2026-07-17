@@ -32,6 +32,23 @@ final class CaptureTaskStoreTests: XCTestCase {
         XCTAssertEqual(runningReuse, claimed)
     }
 
+    func testCreateOrReuseResultReportsWhetherTaskWasCreatedAtomically() async {
+        let id = makeUUID(1)
+        let clock = ManualClock(now: start)
+        let store = CaptureTaskStore(clock: clock, uuid: { id })
+
+        let first = await store.createOrReuseResult()
+        let second = await store.createOrReuseResult()
+
+        XCTAssertEqual(first, .created(CaptureTaskResponse(
+            id: id,
+            status: .pending,
+            expiresAt: start.addingTimeInterval(60),
+            error: nil
+        )))
+        XCTAssertEqual(second, .reused(first.response))
+    }
+
     func testCreateOrReuseExpiresOldTaskBeforeCreatingNewTask() async {
         let firstID = makeUUID(1)
         let secondID = makeUUID(2)

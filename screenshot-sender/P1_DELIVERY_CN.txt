@@ -1,0 +1,159 @@
+LanShot P1 交付说明
+版本：lanshot-p1-20260907.1
+
+归档说明：本文是 P1 独立交付包的原始说明，描述的是交付包生成时的状态。
+当前仓库合并结果与本机验证记录见 MERGE_NOTES_2026-09-08.md。
+
+一、交付状态
+
+本次完成的是“独立源码更新包 + 隔离测试”，不是本机部署。
+
+本轮实际调用 DevSpaces 后，工具返回已禁用。因此没有读取本机最新的完整 P0 工作区，也没有修改、覆盖、重启或提交用户 Mac 上的项目。
+
+代码基线是用户上传的 ec11e7b2-5770-4dae-a1f0-35248cce75b3.zip 中的 screenshot-sender 源码。上传快照含原来的 29 项 Python 测试；它不是上一轮本机改完后的 37 项 P0 测试版本。P0 所需的持久化和去重能力在本更新包中重新接入了新的统一实现，不能把它当作对本机 P0 文件无冲突的增量补丁。
+
+请先在独立目录运行；不要直接覆盖现有 P0 目录。交付包中的基线摘要和差异补丁只针对上述上传快照。
+
+二、已实现内容
+
+P0 收尾：两个图片上传入口统一使用持久 ID/摘要去重。发送端上传前先检查接收端协议和身份，成功后还要验证匹配任务 ID、摘要和 durable=true 的确认。UPLOAD_ACKNOWLEDGED 只表示交付，不再以 TASK_DONE 冒充分析完成。
+
+P1-1 截图与上传解耦：截图和脱敏阶段使用 capture_lock；网络上传不占该锁。图片字节和任务元数据写在同一个 SQLite 事务中，提交后才删除临时截图。上传工作线程按租约领取任务，超时旧领取者不能提交状态。重启后沿用 ID、来源序号、目的地址、模式、尝试次数和重试时间。
+
+队列默认最多 100 个未结束任务，图片字节预算 256 MiB，任务有效期 900 秒。上传默认最多尝试 6 次，达到上限后暂停，需明确人工重试；不是无限自动重传。退避包含抖动，支持有上限的 Retry-After。过期、取消和暂停均有状态，过期任务不再自动上传。切换目的地址/模式不会把旧任务自动发到新目标。
+
+P1-2 进程管理：新增用户级 LaunchAgent 管理器，分别管理 com.lanshot.p1.sender 和 com.lanshot.p1.receiver。新启动/停止脚本只操作这些标签；不使用按名称批量 pkill，不停止旧 P0 进程。旧 install/uninstall 入口在 P1 中明确拒绝执行，避免误动 P0。
+
+KeepAlive 只覆盖非正常退出；重启有节流和预算。用户主动 stop 会把 enabled=false 持久化，避免下次登录又自行启动。配置错误与预算耗尽转为停止/待处理，不靠无限重启掩盖。停止后还检查标签是否仍然加载，失败时报告 degraded，不假报全部停止。
+
+发送端和接收端写运行心跳，区分空闲等待与超过阶段截止时间的卡住。后台线程异常会触发受控失败；模型请求结果未知时不会简单重启线程并重复调用。
+
+P1-3 结果状态：接收状态、模型状态和显示确认分开。SQLite 保存当前任务、上次成功任务、结果版本和来源序号。旧任务晚到或晚完成不会按“到达先后”覆盖同一来源的新任务。显式远程截图请求等待期间，不被无关迟到上传抢走当前任务位置。
+
+latest_state.json 是带版本的结果投影；latest.txt 带当前任务和状态说明。新任务失败时，上一任务的答案只能带“不是本次答案”标签出现；非完成阶段清空可朗读正文。诊断窗口应用相应版本后才能发送显示确认。该确认只代表该窗口已应用文本，不代表人已阅读，也不证明旧悬浮窗已经更新。
+
+P1-4 诊断入口：新增可见的 Tk 本地窗口、命令行 status、queue、export、手动截图、重试、取消和本地截图自检。窗口不隐藏，也不改变系统/平台权限。
+
+诊断包只导出白名单元数据：版本、阶段、计数、任务 ID、错误码、耗时等。不包含截图、答案、提示词、原始日志、API Key 或环境变量。普通键盘输入不再进入调试日志。本地截图自检没有 HTTP 上传代码路径。
+
+P1-5 测试：补充队列容量、目的隔离、过期、竞争领取、断线保留、持久确认、远程与普通上传去重、重复响应不确定、旧结果、模型超时、显式重试、存储失败、进程突然退出和 SIGKILL 等自动化测试。GUI 在 Linux 虚拟显示中做了实际开窗/关闭与显示版本确认冒烟测试。
+
+真实环境矩阵已提供，但 macOS 权限、launchd 实际运行、睡眠唤醒、全屏/外接屏和牛客环境均标为 not_run。没有把合成测试当作牛客兼容性验收。
+
+三、实现边界
+
+模型调用不是 exactly-once：模型已执行而本地未记下结果的窗口无法仅凭本地台账消除。接收端遇到处理中崩溃、模型超时或部分不确定的 HTTP 错误，会保留任务并标为 uncertain。再次调用需要明确确认可能重复计费。明确限流/可重试错误有有限重试，不代表所有 5xx 都会自动重试。
+
+已在接收端可靠入库、但尚未开始模型调用的 queued 任务可以正常继续。processing 任务在进程恢复时不会被无条件再次派发。
+
+来源序号解决单个发送端流内的先后顺序，不提供跨多个独立设备的全局时间一致性保证。来源与序号在发送端持久保存，不能随意删除发送端数据库后还宣称与旧序列连续。
+
+临时截图只有在成功写入队列后才清理。存储故障导致未能入队时，会留下已经采集的文件并报告失败；不自动导入未知裸 JPEG，因为无法确认它是否已经脱敏。该类文件需要人工核查。
+
+当前/上次结果仍可能包含敏感内容，它们保存在本地私有文件中，不是加密数据库。队列过期/完成清理不等于磁盘取证级安全擦除。图片历史有保留策略；去重 ID/摘要记录不会被随意截断以免重新处理旧任务。
+
+本包没有实现第二截图后端、模型路由或规避权限/监考限制。原有 capture-exclusion-demo 未修改、未编译、未在 Mac 上验收。本次提供的显示入口是可见诊断窗口。
+
+四、目录和命令
+
+在解压后的 screenshot-sender 目录执行：
+
+  python3 smoke_p1.py
+  python3 -m unittest discover -s tests -v
+
+第一条使用合成字节、真实本地 HTTP、模拟模型和临时目录，不读取桌面、不产生模型费用、不启动真实 launchd。
+第二条默认不强行开启 GUI。Linux 有 Xvfb 时可执行：
+
+  xvfb-run -a python3 -m unittest discover -s tests -v
+
+macOS 已确认 Tk 可用、希望运行 GUI 冒烟测试时：
+
+  LANSHOT_RUN_GUI_TESTS=1 python3 -m unittest discover -s tests -v
+
+首次独立配置：
+
+  python3 manage_services.py configure
+  python3 manage_services.py start --dry-run
+
+默认状态目录：~/Library/Application Support/LanShotP1
+默认端口：8788
+默认模式：default
+默认配置处于 disabled 状态；configure/dry-run 不启动服务。
+
+管理器从现有 Keychain 服务 com.lanshot.bailian、账户 DASHSCOPE_API_KEY 读取模型 Key，不将其写到 plist。只设置当前终端的环境变量不等于已经给 launchd 子进程配置了 Keychain。可选语音地址、语音 token 和本地 API token 使用 com.lanshot.p1 对应账户；没有把任何现成凭据打入交付包。
+
+当 blocked_words.txt 有内容时，需要原生脱敏程序。在 Mac 上先运行：
+
+  sh build_native_redactor.command
+
+这里使用系统开发工具编译已有 native_redactor.m。本环境不能编译/验证 macOS Vision 程序；编译或权限失败时应停止使用并保留失败状态，不关闭脱敏来追求可用。
+
+代码核对、旧服务停止和系统权限确认完成后，再明确启动：
+
+  python3 manage_services.py start
+  python3 diagnostics.py status
+  python3 diagnostics.py gui
+
+管理器会拒绝与旧 P0 全局监听器同时运行。它不会替用户杀掉旧进程。
+
+仅本地截图自检（不上传）：
+
+  python3 diagnostics.py capture-test
+
+导出脱敏诊断包：
+
+  python3 diagnostics.py export --output ./diagnostics-new.zip
+
+查看或处理发送队列：
+
+  python3 diagnostics.py queue
+  python3 diagnostics.py retry-upload --id <任务UUID>
+  python3 diagnostics.py cancel-upload --id <任务UUID>
+
+停止：
+
+  python3 manage_services.py stop
+
+达到重启预算后，排除故障再显式恢复：
+
+  python3 manage_services.py start --reset-budget
+
+本机 Settings 指向独立输出目录，原 P0 悬浮窗不会自动改为读取这个新目录。先使用本包的诊断窗口验收，之后再决定怎样接入原显示端。
+
+五、P0 数据迁移
+
+迁移前停止对应旧/新服务并备份旧目录。没有自动猜测原接收地址或模式。
+
+发送端：
+
+  python3 diagnostics.py migrate-p0-sender --spool <旧spool目录> --confirm-target http://127.0.0.1:8788
+
+命令只接受当前配置所对应的目标。旧记录写入新数据库成功后才把 .pending.json 标为 .imported；旧图片不自动删除。保留原 created_at，所以过期截图不会突然重新处理。缺失/非法元数据、路径穿越或符号链接不会作为有效任务导入。
+
+接收端：
+
+  python3 migrate_p0_receiver.py --legacy-dir <旧接收状态目录> --confirm-profile default
+
+只读原台账和图片，不删除原文件。已完成 ID 作为去重记录；若原图已删除、原摘要无法验证，重传会被阻止，而不是再次调用模型。旧 processing/failed 项转为 uncertain，原始状态不确定时不自动花钱。旧 latest.txt 不会凭空挂到一个新任务上。
+
+这里提供的是显式迁移工具，不是已在用户本机执行过的迁移。
+
+六、验收与后续真机记录
+
+完整机器可读报告：VALIDATION_REPORT.json
+完整测试输出：validation/test-results.txt
+无真实模型演练输出：validation/smoke-results.json
+真实环境清单：COMPATIBILITY_MATRIX.json
+
+真机每次只改变一个条件：普通网页、牛客普通页、浏览器全屏、macOS 全屏空间、外接显示器、睡眠唤醒、权限拒绝、输入监听停用。
+
+记录这次触发的任务 ID，以及触发、截图、入队、上传、分析、显示各阶段是否到达。失败时导出白名单诊断包。不得把未执行的环境填写为通过。只在允许使用辅助工具的练习/授权测试场景中进行。
+
+七、参考依据
+
+本包的实现和测试是工程工作结果，不以外部文档替代验收。采用 SQLite 显式事务、WAL/FULL 和用户级 LaunchAgent 的机制依据来自：
+https://docs.python.org/3/library/sqlite3.html
+https://www.sqlite.org/pragma.html#pragma_synchronous
+https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html
+
+外部资料不能证明本包已在用户 Mac 上通过测试。此次仍未在该 Mac 部署、未提交 develop、未验证牛客兼容性。

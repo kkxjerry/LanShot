@@ -1,0 +1,83 @@
+{
+  "build": "lanshot-p1-20260907.1",
+  "delivery_type": "independent_source_update_package",
+  "source_basis": "uploaded_snapshot; latest full local P0 checkout was not accessible",
+  "local_mac_modified": false,
+  "local_services_restarted": false,
+  "committed_to_local_develop": false,
+  "devspaces_attempt_result": "tool disabled",
+  "environment": {
+    "os": "Linux",
+    "python": "3.13.5",
+    "gui_display": "Xvfb/Tk 8.6"
+  },
+  "tests": {
+    "command": "xvfb-run -a python -m unittest discover -s tests -v",
+    "run": 136,
+    "passed": 136,
+    "failed": 0,
+    "skipped": 0,
+    "elapsed_seconds": 21.715
+  },
+  "compileall": "passed",
+  "shell_syntax": {
+    "interpreter": "sh -n",
+    "scripts": [
+      "build_native_redactor.command",
+      "open_diagnostics.command",
+      "start_assessment.command",
+      "start_written.command",
+      "stop_assessment.command",
+      "stop_written.command"
+    ],
+    "result": "passed"
+  },
+  "safe_smoke": {
+    "status": "passed",
+    "capture": "synthetic",
+    "transport": "real_loopback_HTTP",
+    "model": "stub_not_paid",
+    "upload": "delivered",
+    "analysis": "complete",
+    "duplicate_model_calls": 0,
+    "user_state_modified": false
+  },
+  "coverage": [
+    "real loopback HTTP",
+    "both upload endpoints durable dedup",
+    "concurrent duplicate submission",
+    "capture/upload lock separation",
+    "destination/profile isolation",
+    "atomic database rollback",
+    "queue/byte limits",
+    "TTL and retry budgets",
+    "stale lease fencing",
+    "source ordering",
+    "current/previous answer isolation",
+    "unknown model outcomes require confirmation",
+    "launchd command generation and mock management",
+    "restart budget",
+    "actual subprocess abnormal exit",
+    "actual SIGKILL child test",
+    "GUI rendering/close cleanup",
+    "redacted export whitelist",
+    "P0 sender/receiver migration"
+  ],
+  "not_verified": [
+    "macOS launchctl actual bootstrap/stop/restart",
+    "macOS Screen Recording/Input Monitoring permissions",
+    "native_redactor compilation and real screenshots",
+    "sleep/wake recovery on real Mac",
+    "real model authentication/quality",
+    "original overlay rendering",
+    "Nowcoder ordinary/fullscreen/client compatibility",
+    "merge against current local P0 working copy"
+  ],
+  "notes": [
+    "Original 29 tests were retained with assertions updated for asynchronous delivery/new state contract.",
+    "The local P0 37-test version was not obtained in full and is not the claimed test baseline.",
+    "Without DISPLAY or LANSHOT_RUN_GUI_TESTS=1, 2 GUI tests skip intentionally.",
+    "No exactly-once guarantee for upstream model execution or billing."
+  ],
+  "patch_dry_run_against_uploaded_baseline": "passed"
+}

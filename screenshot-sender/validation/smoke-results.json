@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "capture": "synthetic",
+  "transport": "real_loopback_HTTP",
+  "model": "stub_not_paid",
+  "upload": "delivered",
+  "analysis": "complete",
+  "duplicate_model_calls": 0,
+  "user_state_modified": false
+}

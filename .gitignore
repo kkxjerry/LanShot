@@ -2,3 +2,10 @@
 .swiftpm/
 dist/
 .DS_Store
+__pycache__/
+*.py[cod]
+*.log
+*.pid
+.bailian_api_key
+screenshot-sender/native_redactor
+screenshot-sender/LanShotAudioCapture.app/

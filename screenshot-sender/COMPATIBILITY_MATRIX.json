@@ -1,0 +1,207 @@
+{
+  "warning": "All real environments below are NOT_RUN. Synthetic tests are not proof of compatibility.",
+  "allowed_scope": "仅在允许使用辅助工具的练习或授权测试场景",
+  "build": "lanshot-p1-20260907.1",
+  "cases": [
+    {
+      "id": "web_normal",
+      "environment": "普通浏览器网页",
+      "status": "not_run",
+      "task_id": null,
+      "os_version": null,
+      "browser_or_client_version": null,
+      "display_layout": null,
+      "permissions": null,
+      "stages": {
+        "trigger": "not_run",
+        "capture": "not_run",
+        "enqueue": "not_run",
+        "upload": "not_run",
+        "analysis": "not_run",
+        "display": "not_run"
+      },
+      "diagnostics_archive": null,
+      "notes": ""
+    },
+    {
+      "id": "nowcoder_normal",
+      "environment": "牛客普通页面",
+      "status": "not_run",
+      "task_id": null,
+      "os_version": null,
+      "browser_or_client_version": null,
+      "display_layout": null,
+      "permissions": null,
+      "stages": {
+        "trigger": "not_run",
+        "capture": "not_run",
+        "enqueue": "not_run",
+        "upload": "not_run",
+        "analysis": "not_run",
+        "display": "not_run"
+      },
+      "diagnostics_archive": null,
+      "notes": ""
+    },
+    {
+      "id": "browser_fullscreen",
+      "environment": "浏览器全屏",
+      "status": "not_run",
+      "task_id": null,
+      "os_version": null,
+      "browser_or_client_version": null,
+      "display_layout": null,
+      "permissions": null,
+      "stages": {
+        "trigger": "not_run",
+        "capture": "not_run",
+        "enqueue": "not_run",
+        "upload": "not_run",
+        "analysis": "not_run",
+        "display": "not_run"
+      },
+      "diagnostics_archive": null,
+      "notes": ""
+    },
+    {
+      "id": "macos_fullscreen_space",
+      "environment": "macOS 全屏空间",
+      "status": "not_run",
+      "task_id": null,
+      "os_version": null,
+      "browser_or_client_version": null,
+      "display_layout": null,
+      "permissions": null,
+      "stages": {
+        "trigger": "not_run",
+        "capture": "not_run",
+        "enqueue": "not_run",
+        "upload": "not_run",
+        "analysis": "not_run",
+        "display": "not_run"
+      },
+      "diagnostics_archive": null,
+      "notes": ""
+    },
+    {
+      "id": "external_display",
+      "environment": "外接显示器",
+      "status": "not_run",
+      "task_id": null,
+      "os_version": null,
+      "browser_or_client_version": null,
+      "display_layout": null,
+      "permissions": null,
+      "stages": {
+        "trigger": "not_run",
+        "capture": "not_run",
+        "enqueue": "not_run",
+        "upload": "not_run",
+        "analysis": "not_run",
+        "display": "not_run"
+      },
+      "diagnostics_archive": null,
+      "notes": ""
+    },
+    {
+      "id": "sleep_wake",
+      "environment": "睡眠唤醒",
+      "status": "not_run",
+      "task_id": null,
+      "os_version": null,
+      "browser_or_client_version": null,
+      "display_layout": null,
+      "permissions": null,
+      "stages": {
+        "trigger": "not_run",
+        "capture": "not_run",
+        "enqueue": "not_run",
+        "upload": "not_run",
+        "analysis": "not_run",
+        "display": "not_run"
+      },
+      "diagnostics_archive": null,
+      "notes": ""
+    },
+    {
+      "id": "screen_permission_denied",
+      "environment": "录屏权限拒绝",
+      "status": "not_run",
+      "task_id": null,
+      "os_version": null,
+      "browser_or_client_version": null,
+      "display_layout": null,
+      "permissions": null,
+      "stages": {
+        "trigger": "not_run",
+        "capture": "not_run",
+        "enqueue": "not_run",
+        "upload": "not_run",
+        "analysis": "not_run",
+        "display": "not_run"
+      },
+      "diagnostics_archive": null,
+      "notes": ""
+    },
+    {
+      "id": "input_monitoring_disabled",
+      "environment": "输入监听禁用",
+      "status": "not_run",
+      "task_id": null,
+      "os_version": null,
+      "browser_or_client_version": null,
+      "display_layout": null,
+      "permissions": null,
+      "stages": {
+        "trigger": "not_run",
+        "capture": "not_run",
+        "enqueue": "not_run",
+        "upload": "not_run",
+        "analysis": "not_run",
+        "display": "not_run"
+      },
+      "diagnostics_archive": null,
+      "notes": ""
+    },
+    {
+      "id": "managed_sender_exit",
+      "environment": "托管 sender 异常退出",
+      "status": "not_run",
+      "task_id": null,
+      "os_version": null,
+      "browser_or_client_version": null,
+      "display_layout": null,
+      "permissions": null,
+      "stages": {
+        "trigger": "not_run",
+        "capture": "not_run",
+        "enqueue": "not_run",
+        "upload": "not_run",
+        "analysis": "not_run",
+        "display": "not_run"
+      },
+      "diagnostics_archive": null,
+      "notes": ""
+    },
+    {
+      "id": "managed_receiver_exit",
+      "environment": "托管 receiver 异常退出",
+      "status": "not_run",
+      "task_id": null,
+      "os_version": null,
+      "browser_or_client_version": null,
+      "display_layout": null,
+      "permissions": null,
+      "stages": {
+        "trigger": "not_run",
+        "capture": "not_run",
+        "enqueue": "not_run",
+        "upload": "not_run",
+        "analysis": "not_run",
+        "display": "not_run"
+      },
+      "diagnostics_archive": null,
+      "notes": ""
+    }
+  ]
+}

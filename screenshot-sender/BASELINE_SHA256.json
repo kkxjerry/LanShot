@@ -1,0 +1,15 @@
+{
+  "archive_name": "ec11e7b2-5770-4dae-a1f0-35248cce75b3.zip",
+  "archive_sha256": "36fdee3791b4efa349ac294e89a30fe6e9cf04f41a53f2c48a09f2565d9039ea",
+  "files": {
+    "native_redactor.m": "c226de5584a69a82b94c095868e668122f8f05c87f7728f626609a910216aa13",
+    "stop_assessment.command": "a5a605c4864c01b934877fce7553c1488a75dca98cdb93cef9883cf676e039d1",
+    "interview_prompt.txt": "923b73375946b4ce7bd6905dce571cfafb5331c96c97fab7495f084996add500",
+    "receiver_service.py": "ec200549f7a228914a17fad75ba096b4c81b939229306589216ec81d3b0e3b1d",
+    "start_assessment.command": "b458cc16b6f637371379676fed512addf32a944633dc985af372a364cc264da5",
+    "README.md": "02c16c4610b36281e38bcdb635b037537300fe78fdcb0007ea3a95676dc7b9af",
+    "sender_service.py": "f884d0476a0c0bf4246c39de4505b50cfe1a1a26b2a7c5627ad86afb498823f1",
+    "tests/test_receiver_service.py": "b394ab52765d9d4c381b175ad8342235fd2f7b006a747b41345e4da35331c4d5",
+    "tests/test_sender_service.py": "93b57a0f0a2727e6af68bc8da71073dc8861560f5e6bb5ef3524a3bd6a7990e7"
+  }
+}

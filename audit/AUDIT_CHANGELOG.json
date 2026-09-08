@@ -1,0 +1,535 @@
+{
+  "build": "lanshot-p1r2-20260908.1",
+  "scope": "all deliverable source, tests, docs and validation files; audit generated files and recursive checksums excluded",
+  "source_basis": {
+    "P1_archive": "LanShot_P1_实现与测试包_2026-09-07.zip",
+    "P1_sha256": "45b1efa914e4c344b488fb3d595d9d61fcbfdb0ba0cf002944b2a4598c653c6c",
+    "original_archive": "ec11e7b2-5770-4dae-a1f0-35248cce75b3.zip",
+    "original_sha256": "36fdee3791b4efa349ac294e89a30fe6e9cf04f41a53f2c48a09f2565d9039ea",
+    "latest_local_mac_P0_read": false,
+    "native_source": "original uploaded capture-exclusion-demo"
+  },
+  "counts_vs_original_P1": {
+    "added": 19,
+    "unchanged": 14,
+    "modified": 13,
+    "deleted": 6
+  },
+  "changes": [
+    {
+      "path": "READ_ME_FIRST.txt",
+      "status": "added",
+      "purpose": "新增根目录入口，明确交付不是Mac部署。",
+      "added_lines": 19,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "12f6b6fa75223be5ed8af0263d162ef30c8715e3d8a8738d240b27671787bfa5"
+    },
+    {
+      "path": "capture-exclusion-demo/CaptureExclusionDemo.swift",
+      "status": "added",
+      "purpose": "恢复原生源码并新增显式目录、版本状态、回执、菜单请求。",
+      "added_lines": 839,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "8b0eddad326f29ad5a183eb0380187f633f8db4f968a925b276af0abb5836e01"
+    },
+    {
+      "path": "capture-exclusion-demo/Info.plist",
+      "status": "added",
+      "purpose": "恢复原生App元数据，新增显示协议版本。",
+      "added_lines": 32,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "998a7d0c9a98562a8b1afe17172275d60893e16b8eda32c0edef22de9cc3b32e"
+    },
+    {
+      "path": "capture-exclusion-demo/README.md",
+      "status": "added",
+      "purpose": "替换使用说明：当前显示/多接收配置与未验证边界。",
+      "added_lines": 9,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "2aa2037737ad9fe9e13485ee22afb9aa155e336e160efe7bffe8748c60565c11"
+    },
+    {
+      "path": "capture-exclusion-demo/build.sh",
+      "status": "added",
+      "purpose": "恢复Mac构建入口，先编译后备份替换，不预删旧App。",
+      "added_lines": 20,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "0b7bb4ae9ebb896ae3fc42d8907d77470bcffc8532dffc3563cd73db8fed2966"
+    },
+    {
+      "path": "screenshot-sender/BASELINE_SHA256.json",
+      "status": "unchanged",
+      "purpose": "保留旧P1所依据原始上传源码摘要。",
+      "added_lines": 0,
+      "deleted_lines": 0,
+      "before_sha256": "725f9d6a96c99015bba7b80f8e686f14d0a161c1e740588a5e654c8bc283ccef",
+      "after_sha256": "725f9d6a96c99015bba7b80f8e686f14d0a161c1e740588a5e654c8bc283ccef"
+    },
+    {
+      "path": "screenshot-sender/COMPATIBILITY_MATRIX.json",
+      "status": "modified",
+      "purpose": "更新版本，Mac/牛客真机全部仍为not_run。",
+      "added_lines": 2,
+      "deleted_lines": 2,
+      "before_sha256": "fffab0616a8a0d375c5f2877694da2fb42277a12bdafeb4b69612b5ac2c488ef",
+      "after_sha256": "f1ed5e5a5e99b7636e1bb1201277fdb73026383155a4c0cc9561cef4865a196e"
+    },
+    {
+      "path": "screenshot-sender/P1_DELIVERY_CN.txt",
+      "status": "modified",
+      "purpose": "重新编写完整审计、功能、配置、测试和边界说明。",
+      "added_lines": 151,
+      "deleted_lines": 111,
+      "before_sha256": "fcbd06ca8201c8a28ecc99df6033ae91b03cbafe59ad88f187a66508d7cb0410",
+      "after_sha256": "9dca0bac30f2d178a3e7a8d0dca87618d6e47b90a46112cfa22773ddeda38121"
+    },
+    {
+      "path": "screenshot-sender/P1_changes.patch",
+      "status": "deleted",
+      "purpose": "删除旧根目录patch；audit中提供明确基线的新差异。",
+      "added_lines": 0,
+      "deleted_lines": 4526,
+      "before_sha256": "48a6d1eb56b5d0c84235abe7468978a3db8cd212e211e824c41794984efaf4f3",
+      "after_sha256": null
+    },
+    {
+      "path": "screenshot-sender/README.md",
+      "status": "modified",
+      "purpose": "替换使用说明：当前显示/多接收配置与未验证边界。",
+      "added_lines": 25,
+      "deleted_lines": 10,
+      "before_sha256": "2898d168e38072973469f5d7b5e4868861ecfc88fbb3a04bac822fccadf53bfe",
+      "after_sha256": "380eb7c2b818f4f6c237feba3de2072f849cbb9081edba409de55f6185ca55f3"
+    },
+    {
+      "path": "screenshot-sender/README_LEGACY.md",
+      "status": "deleted",
+      "purpose": "删除：旧安装说明，避免误启动旧服务。",
+      "added_lines": 0,
+      "deleted_lines": 94,
+      "before_sha256": "02c16c4610b36281e38bcdb635b037537300fe78fdcb0007ea3a95676dc7b9af",
+      "after_sha256": null
+    },
+    {
+      "path": "screenshot-sender/SHA256SUMS.txt",
+      "status": "deleted",
+      "purpose": "旧位置删除；根目录重新提供全包校验，不沿用旧摘要。",
+      "added_lines": 0,
+      "deleted_lines": 32,
+      "before_sha256": "97ef25513d73593fbed683a5eb15e773cb65a11754d74ee81d23854cd58fa8c6",
+      "after_sha256": null
+    },
+    {
+      "path": "screenshot-sender/VALIDATION_REPORT.json",
+      "status": "modified",
+      "purpose": "用本次197项实测与未验证范围替换旧136项报告。",
+      "added_lines": 116,
+      "deleted_lines": 68,
+      "before_sha256": "718420474e8e15615318feb5b934d74d57b6809d5d6b1cd6e95834662e30cf86",
+      "after_sha256": "f8460c49e712e8d90965e5ac1e9356917c18a562c2b5e76278b21f06ac23de4f"
+    },
+    {
+      "path": "screenshot-sender/build_native_redactor.command",
+      "status": "unchanged",
+      "purpose": "保留本地原生脱敏构建入口。",
+      "added_lines": 0,
+      "deleted_lines": 0,
+      "before_sha256": "b596650e6bedff833d8b8117deed17835210283f3c56aa20783765d8102aeeed",
+      "after_sha256": "b596650e6bedff833d8b8117deed17835210283f3c56aa20783765d8102aeeed"
+    },
+    {
+      "path": "screenshot-sender/compare_baseline.py",
+      "status": "unchanged",
+      "purpose": "保留原上传快照的差异工具；不是本机最新P0合并证明。",
+      "added_lines": 0,
+      "deleted_lines": 0,
+      "before_sha256": "6b0164ae9ec34165fe3951b61ef1b14eb7a8d24424fd864ee7fa9c8040455feb",
+      "after_sha256": "6b0164ae9ec34165fe3951b61ef1b14eb7a8d24424fd864ee7fa9c8040455feb"
+    },
+    {
+      "path": "screenshot-sender/deployment/README.txt",
+      "status": "added",
+      "purpose": "新增服务器部署、令牌、TLS、授权与策略变化说明。",
+      "added_lines": 56,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "181e6514a5cfb99ba3989a279de3e4df507926b0a7e09f09f6bc7fe1d441f105"
+    },
+    {
+      "path": "screenshot-sender/deployment/lanshot-remote.service.example",
+      "status": "added",
+      "purpose": "新增未安装的远程systemd模板，供管理员配置。",
+      "added_lines": 30,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "11a840a893794a8dbd905c822124938f14ac33c5d7460964b92d38ef783427b5"
+    },
+    {
+      "path": "screenshot-sender/deployment/remote_receiver.py",
+      "status": "added",
+      "purpose": "新增远程HTTPS前台入口，凭据从环境读取。",
+      "added_lines": 54,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "601387fb3165c5a0b62da5a63b9c2697a00598fe50286d5fd87fdceea6289e86"
+    },
+    {
+      "path": "screenshot-sender/diagnostics.py",
+      "status": "modified",
+      "purpose": "移除Tk GUI与旧view；保留CLI并增加路由、原任务控制及白名单诊断。",
+      "added_lines": 73,
+      "deleted_lines": 129,
+      "before_sha256": "5a9c4d61f3e4d1ee6a47c5b65a911bfdc42fbb8f7311e9c8d674178b86b83964",
+      "after_sha256": "45c7446a2cc507d36bbafc577382458d7c1c7161d23513d8391ca606ad8348b4"
+    },
+    {
+      "path": "screenshot-sender/display_bridge.py",
+      "status": "added",
+      "purpose": "新增原生显示桥接；当前/上次、版本回执、手动请求；不调模型。",
+      "added_lines": 167,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "ff2684f634851271d2112c10ffae566febe83f4cd8c476758f74c059b03d86c4"
+    },
+    {
+      "path": "screenshot-sender/interview_prompt.txt",
+      "status": "unchanged",
+      "purpose": "保留已有提示词，未更换模型任务。",
+      "added_lines": 0,
+      "deleted_lines": 0,
+      "before_sha256": "923b73375946b4ce7bd6905dce571cfafb5331c96c97fab7495f084996add500",
+      "after_sha256": "923b73375946b4ce7bd6905dce571cfafb5331c96c97fab7495f084996add500"
+    },
+    {
+      "path": "screenshot-sender/manage_services.py",
+      "status": "modified",
+      "purpose": "新增单体/双接收+内嵌模式、显示角色、远程配置、路径一致性和原生启动。",
+      "added_lines": 171,
+      "deleted_lines": 25,
+      "before_sha256": "2f100e84ca9262a826a25cbce21cdb0fb58a66ef3dd8642f9fa3f64918b7268b",
+      "after_sha256": "0839e5be9f76d902202cff9c50af75f376dd8f54c1777301627d514fd5b1ae41"
+    },
+    {
+      "path": "screenshot-sender/migrate_p0_receiver.py",
+      "status": "unchanged",
+      "purpose": "保留显式迁移，不自动重发不确定历史任务。",
+      "added_lines": 0,
+      "deleted_lines": 0,
+      "before_sha256": "757af210b41ee4a8bbe8610700cd91e6a636f8eebb690357aed41c76f48511ca",
+      "after_sha256": "757af210b41ee4a8bbe8610700cd91e6a636f8eebb690357aed41c76f48511ca"
+    },
+    {
+      "path": "screenshot-sender/multi_receiver.py",
+      "status": "added",
+      "purpose": "新增多入口路由、持久归属、同集群对账、熔断、远程授权和结果读取。",
+      "added_lines": 508,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "44dc6c9afbbc5bfa4c12a8c655e7568dd9ba3be9c820fbd179d31e61eac24511"
+    },
+    {
+      "path": "screenshot-sender/native_redactor.m",
+      "status": "unchanged",
+      "purpose": "保留已有脱敏逻辑，未绕过脱敏或权限。",
+      "added_lines": 0,
+      "deleted_lines": 0,
+      "before_sha256": "c226de5584a69a82b94c095868e668122f8f05c87f7728f626609a910216aa13",
+      "after_sha256": "c226de5584a69a82b94c095868e668122f8f05c87f7728f626609a910216aa13"
+    },
+    {
+      "path": "screenshot-sender/open_diagnostics.command",
+      "status": "deleted",
+      "purpose": "删除：旧Tk启动器。",
+      "added_lines": 0,
+      "deleted_lines": 5,
+      "before_sha256": "278486090ec65727fdb3261e428ca0b446e8d576fd5752ef84061aa3cf14a01d",
+      "after_sha256": null
+    },
+    {
+      "path": "screenshot-sender/receiver_runtime.py",
+      "status": "added",
+      "purpose": "新增可嵌入运行时；所有者锁、备用等待、未知模型状态恢复。",
+      "added_lines": 126,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "cc5cbd76e2f238714afaa143df2ab7e30b75cbc28975282b3e7cb2f34ac14c7e"
+    },
+    {
+      "path": "screenshot-sender/receiver_service.py",
+      "status": "modified",
+      "purpose": "共享运行时、多实例HTTP、任务查询、持久ACK、TLS/令牌/Host限制。",
+      "added_lines": 87,
+      "deleted_lines": 84,
+      "before_sha256": "a5ff36a00e8ffe07577e968a1a117354a1d4a542ca73c5922682ec002117cfd3",
+      "after_sha256": "b2dbaa1bf76e9a25dcdb4141f8ac079e83042e65a1327014b44d403362858c63"
+    },
+    {
+      "path": "screenshot-sender/reliability.py",
+      "status": "modified",
+      "purpose": "持久事务、租约、接收集群绑定和短时跨进程锁；改用DELETE/FULL。",
+      "added_lines": 41,
+      "deleted_lines": 5,
+      "before_sha256": "b7495571598b8596bd91c9508f868add7842614e24e33209505a12b2655646ee",
+      "after_sha256": "2349a4a3e4835f2592332ba8b07027e609d82f1f7de39f80dcb629789ee5feac"
+    },
+    {
+      "path": "screenshot-sender/sender_service.py",
+      "status": "modified",
+      "purpose": "按路由策略入队/发送，内嵌运行时接线，显示目录统一，失败与操作预算。",
+      "added_lines": 66,
+      "deleted_lines": 35,
+      "before_sha256": "d58d9412385243680212e55c7ea8d297c47cac9ea067e7b2398d26e2c553e0fa",
+      "after_sha256": "2d93c4f2428afa3847a4e7d7c568384310e0cff023846dfa065069334dd81bb5"
+    },
+    {
+      "path": "screenshot-sender/show_status.command",
+      "status": "added",
+      "purpose": "新增：只显示CLI诊断状态。",
+      "added_lines": 4,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "031854a8a4a885e022772bd73e585bf0714d26f4decc6ff74afac021e2035393"
+    },
+    {
+      "path": "screenshot-sender/smoke_multi.py",
+      "status": "added",
+      "purpose": "新增内嵌→本地主→本地备三路径的实际合成演练。",
+      "added_lines": 118,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "bad31ca7a6bef50a7dba3a28316bd09117ec7e6306e970ba5f2cc6d2ea3012d5"
+    },
+    {
+      "path": "screenshot-sender/smoke_p1.py",
+      "status": "unchanged",
+      "purpose": "保留原有安全合成HTTP演练。",
+      "added_lines": 0,
+      "deleted_lines": 0,
+      "before_sha256": "e407a4c9149852f0124cf382e79708cd565368c409f08ebeb8adfaabf539e0d5",
+      "after_sha256": "e407a4c9149852f0124cf382e79708cd565368c409f08ebeb8adfaabf539e0d5"
+    },
+    {
+      "path": "screenshot-sender/start_assessment.command",
+      "status": "modified",
+      "purpose": "恢复默认模式检查和原生显示启动。",
+      "added_lines": 2,
+      "deleted_lines": 3,
+      "before_sha256": "212bb991cca9df761edbe8bb6fd2d2ff6ad5d3f8d3b24afa16be425b673fa6a6",
+      "after_sha256": "333b430dbb696c40e383b8b855a5b49f6e26f1b836cc72706878e4aedf3bb6f0"
+    },
+    {
+      "path": "screenshot-sender/start_written.command",
+      "status": "modified",
+      "purpose": "恢复written模式检查，保留语音模式不自动开悬浮窗。",
+      "added_lines": 2,
+      "deleted_lines": 3,
+      "before_sha256": "212bb991cca9df761edbe8bb6fd2d2ff6ad5d3f8d3b24afa16be425b673fa6a6",
+      "after_sha256": "e6961926f34ab1037640862dd6be6f6a16285dce60370b9a1e7f1c5ce3b84d00"
+    },
+    {
+      "path": "screenshot-sender/stop_assessment.command",
+      "status": "unchanged",
+      "purpose": "原停止入口保留，委托新的受限管理器。",
+      "added_lines": 0,
+      "deleted_lines": 0,
+      "before_sha256": "0c544625645f604cb46c5e39e42a8498beeaaf1b3a0b1609b7203f454da8c68f",
+      "after_sha256": "0c544625645f604cb46c5e39e42a8498beeaaf1b3a0b1609b7203f454da8c68f"
+    },
+    {
+      "path": "screenshot-sender/stop_written.command",
+      "status": "unchanged",
+      "purpose": "原停止入口保留，委托新的受限管理器。",
+      "added_lines": 0,
+      "deleted_lines": 0,
+      "before_sha256": "0c544625645f604cb46c5e39e42a8498beeaaf1b3a0b1609b7203f454da8c68f",
+      "after_sha256": "0c544625645f604cb46c5e39e42a8498beeaaf1b3a0b1609b7203f454da8c68f"
+    },
+    {
+      "path": "screenshot-sender/tests/test_management_diagnostics.py",
+      "status": "modified",
+      "purpose": "适配4角色并新增2项多角色诊断白名单测试。",
+      "added_lines": 21,
+      "deleted_lines": 2,
+      "before_sha256": "bb1d28e0845e894cc621b556c33327b00181c16ad912edf9fc03acae49f7ed61",
+      "after_sha256": "d5f0971af776ecf8243d8cca0f772fffc26f896a3ec35b38de1f635ed42ade7f"
+    },
+    {
+      "path": "screenshot-sender/tests/test_migration.py",
+      "status": "added",
+      "purpose": "从旧混合文件保留迁移测试，不包含Tk。",
+      "added_lines": 46,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "8c48e6183a4752312b03f3f5a9b1917edf9f8227eb82cd6547b9ea31c8e0886b"
+    },
+    {
+      "path": "screenshot-sender/tests/test_migration_and_gui.py",
+      "status": "deleted",
+      "purpose": "删除旧文件名；5项迁移测试移入test_migration.py，仅移除2项Tk测试。",
+      "added_lines": 0,
+      "deleted_lines": 69,
+      "before_sha256": "f9dcdc6f55858777d8445507fd4df900b6f6ab34c2210bff15dbb4f3249ffe1f",
+      "after_sha256": null
+    },
+    {
+      "path": "screenshot-sender/tests/test_multi_receiver.py",
+      "status": "added",
+      "purpose": "新增57项路由/多实例/HTTPS/原生协议/SIGKILL/配置测试。",
+      "added_lines": 437,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "3dca737b06108345b52c1a441fc36e3b1ece91848b19f14815b165a926dfa374"
+    },
+    {
+      "path": "screenshot-sender/tests/test_p1_integration.py",
+      "status": "unchanged",
+      "purpose": "保留34项P1集成测试。",
+      "added_lines": 0,
+      "deleted_lines": 0,
+      "before_sha256": "1042e6afdaa9736be455eac6697ee73d5331f61cdf754bdd3e2e7e62203601ca",
+      "after_sha256": "1042e6afdaa9736be455eac6697ee73d5331f61cdf754bdd3e2e7e62203601ca"
+    },
+    {
+      "path": "screenshot-sender/tests/test_receiver_service.py",
+      "status": "unchanged",
+      "purpose": "保留10项接收端测试。",
+      "added_lines": 0,
+      "deleted_lines": 0,
+      "before_sha256": "8423c310e8739ff7e8237d29718a62bdc81c5924e75a2b96c24612534ac81acb",
+      "after_sha256": "8423c310e8739ff7e8237d29718a62bdc81c5924e75a2b96c24612534ac81acb"
+    },
+    {
+      "path": "screenshot-sender/tests/test_reliability.py",
+      "status": "unchanged",
+      "purpose": "保留48项队列、租约、状态及恢复测试。",
+      "added_lines": 0,
+      "deleted_lines": 0,
+      "before_sha256": "cb3a4f7fc59bcbf8097e6fa805275e394a66cfebda2eaa08462a4bd4451436cb",
+      "after_sha256": "cb3a4f7fc59bcbf8097e6fa805275e394a66cfebda2eaa08462a4bd4451436cb"
+    },
+    {
+      "path": "screenshot-sender/tests/test_remote_entry.py",
+      "status": "added",
+      "purpose": "新增4项服务器入口配置与凭据隔离测试。",
+      "added_lines": 32,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "ad069ca076daab178faaecaff73967b396b81d55dea77543f45fc177d6ee073c"
+    },
+    {
+      "path": "screenshot-sender/tests/test_sender_service.py",
+      "status": "unchanged",
+      "purpose": "保留19项发送端测试。",
+      "added_lines": 0,
+      "deleted_lines": 0,
+      "before_sha256": "52d83def3181c590cab7485456dd8cd577d1edd3f6a240e3754731cfc526c53c",
+      "after_sha256": "52d83def3181c590cab7485456dd8cd577d1edd3f6a240e3754731cfc526c53c"
+    },
+    {
+      "path": "screenshot-sender/validation/patch-dry-run.txt",
+      "status": "deleted",
+      "purpose": "删除旧基线patch验证，不能代表本次修订。",
+      "added_lines": 0,
+      "deleted_lines": 24,
+      "before_sha256": "fffe49c0afb85a958f85f1bb8ea340980841d58e272a310353f801741f810d83",
+      "after_sha256": null
+    },
+    {
+      "path": "screenshot-sender/validation/run-started-at.txt",
+      "status": "added",
+      "purpose": "隔离验证时间记录。",
+      "added_lines": 1,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "1140ea5655a49c1167c43c21b018109dd4a67b43ec732fd6b57a491786fbc301"
+    },
+    {
+      "path": "screenshot-sender/validation/smoke-multi-results.json",
+      "status": "added",
+      "purpose": "新增三路径切换实测结果。",
+      "added_lines": 30,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "008921582b3fdaf56d20ff610312db4fff179ad0d075fa575fdab7a2fd38764e"
+    },
+    {
+      "path": "screenshot-sender/validation/smoke-results.json",
+      "status": "unchanged",
+      "purpose": "重新运行原有合成演练并替换结果。",
+      "added_lines": 0,
+      "deleted_lines": 0,
+      "before_sha256": "15c498fcb3f84db3cd82df77db2fa54e8402bbcd8e46250f0644d7057f07d935",
+      "after_sha256": "15c498fcb3f84db3cd82df77db2fa54e8402bbcd8e46250f0644d7057f07d935"
+    },
+    {
+      "path": "screenshot-sender/validation/static-checks.txt",
+      "status": "added",
+      "purpose": "记录Python/shell/Swift语法检查，不等于AppKit运行。",
+      "added_lines": 4,
+      "deleted_lines": 0,
+      "before_sha256": null,
+      "after_sha256": "3605684e9b0c5012671c44992c1d10f2c0256c71f9f1acbc7434d8563eb0219b"
+    },
+    {
+      "path": "screenshot-sender/validation/test-results.txt",
+      "status": "modified",
+      "purpose": "重新运行197项测试的逐项原始输出。",
+      "added_lines": 72,
+      "deleted_lines": 8,
+      "before_sha256": "12a206b075830d2f4d130273930ca801adaecaaa30fe4b21441e39978942f1de",
+      "after_sha256": "b993e148a326eff6a34dfae66652aa7e170c7d0bd3859b259a9e42feb07e0929"
+    }
+  ],
+  "native_changes_vs_original_user_snapshot": [
+    {
+      "path": "capture-exclusion-demo/CaptureExclusionDemo.swift",
+      "status": "modified",
+      "purpose": "恢复原生源码并新增显式目录、版本状态、回执、菜单请求。",
+      "added_lines": 87,
+      "deleted_lines": 3,
+      "before_sha256": "479ec3a7fbdff9ba239b6ca17c816273db494830b0a3f8caff1861c03f568590",
+      "after_sha256": "8b0eddad326f29ad5a183eb0380187f633f8db4f968a925b276af0abb5836e01"
+    },
+    {
+      "path": "capture-exclusion-demo/Info.plist",
+      "status": "modified",
+      "purpose": "恢复原生App元数据，新增显示协议版本。",
+      "added_lines": 26,
+      "deleted_lines": 24,
+      "before_sha256": "5c9ae6780d5b52a9d1bf7880aa016f01e7dfe8978de56433c8900ba02b910e5b",
+      "after_sha256": "998a7d0c9a98562a8b1afe17172275d60893e16b8eda32c0edef22de9cc3b32e"
+    },
+    {
+      "path": "capture-exclusion-demo/README.md",
+      "status": "modified",
+      "purpose": "替换使用说明：当前显示/多接收配置与未验证边界。",
+      "added_lines": 5,
+      "deleted_lines": 39,
+      "before_sha256": "d1cc08edf62db66a3f3c504a22a569d512090d859f871e44962f5f2eb908051c",
+      "after_sha256": "2aa2037737ad9fe9e13485ee22afb9aa155e336e160efe7bffe8748c60565c11"
+    },
+    {
+      "path": "capture-exclusion-demo/build.sh",
+      "status": "modified",
+      "purpose": "恢复Mac构建入口，先编译后备份替换，不预删旧App。",
+      "added_lines": 19,
+      "deleted_lines": 23,
+      "before_sha256": "44ffbcd10d77e37b198641385d0f27e7e967d34734c17ea94f4ecec5d6443ea7",
+      "after_sha256": "0b7bb4ae9ebb896ae3fc42d8907d77470bcffc8532dffc3563cd73db8fed2966"
+    }
+  ],
+  "excluded_from_release": [
+    ".git",
+    "__pycache__",
+    "compiled binaries",
+    "runtime data",
+    "original uploaded ZIPs",
+    "working patch scripts"
+  ],
+  "no_user_data_deleted": true
+}

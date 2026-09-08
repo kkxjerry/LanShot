@@ -1,0 +1,30 @@
+# TEMPLATE ONLY. Not installed or enabled by this package.
+# Create a dedicated lanshot user and replace paths/host before installation.
+[Unit]
+Description=LanShot authenticated HTTPS receiver
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=lanshot
+Group=lanshot
+WorkingDirectory=/opt/lanshot/screenshot-sender
+# This administrator-owned 0600 file must supply DASHSCOPE_API_KEY and
+# LANSHOT_LOCAL_TOKEN. This file and actual credentials are NOT in the package.
+EnvironmentFile=/etc/lanshot/receiver.env
+ExecStart=/usr/bin/python3 /opt/lanshot/screenshot-sender/deployment/remote_receiver.py --public-host receiver.example.com --port 9443 --profile default --prompt-file /etc/lanshot/prompt.txt --state-dir /var/lib/lanshot --tls-cert /etc/lanshot/tls/fullchain.pem --tls-key /etc/lanshot/tls/privkey.pem
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lanshot
+
+[Install]
+WantedBy=multi-user.target

@@ -49,14 +49,14 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(result['status'],'stopped_by_user')
         self.assertFalse(manager.read_settings(self.settings)['enabled'])
         commands=[c.args[0] for c in runner.call_args_list]
-        self.assertEqual(sum(c[1]=='bootout' for c in commands),2)
+        self.assertEqual(sum(c[1]=='bootout' for c in commands),4)
         self.assertTrue(all(c[1] in ('bootout','print') and 'com.lanshot.p1.' in c[2] for c in commands))
     def test_failed_stop_is_degraded_not_fake_stopped(self):
         runner=mock.Mock(return_value=mock.Mock(returncode=0))
         with mock.patch('manage_services.sys.platform','darwin'):
             result=manager.control('stop',self.settings,runner=runner,launch_dir=self.root/'launch')
         self.assertEqual(result['status'],'degraded')
-        self.assertEqual(set(result['still_loaded']),{'sender','receiver'})
+        self.assertEqual(set(result['still_loaded']),set(manager.ROLES))
 
     def test_legacy_install_does_not_touch_p0_agents(self):
         import sender_service
@@ -121,3 +121,22 @@ class DiagnosticsTests(unittest.TestCase):
     def test_stale_heartbeat_not_reported_fresh(self):
         path=self.root/'heartbeat.json'; path.write_text(json.dumps({'at':1,'status':'running'}))
         self.assertFalse(diagnostics.Diagnostics._read_status(path)['heartbeat_fresh'])
+
+    def test_export_includes_backup_route_without_answer_or_credentials(self):
+        diag=diagnostics.Diagnostics(self.settings)
+        raw={'sender':{},'receiver':{},'routes':[{'id':'task','backend':'local-backup','cluster_id':'cluster',
+             'state':'accepted','answer':'PRIVATE-ANSWER','token':'PRIVATE-TOKEN'}],
+             'display':{'status':'running','answer':'PRIVATE-ANSWER'},
+             'receiver_nodes':{'receiver_backup':{'status':'running','token':'PRIVATE-TOKEN'}}}
+        with mock.patch.object(diag,'status',return_value=raw): archive=diag.export(self.root/'routes.zip')
+        with zipfile.ZipFile(archive) as z: text=z.read('status.json').decode()
+        self.assertIn('local-backup',text);self.assertIn('receiver_backup',text)
+        self.assertNotIn('PRIVATE-ANSWER',text);self.assertNotIn('PRIVATE-TOKEN',text)
+    def test_export_reads_backup_log_but_not_raw_fields(self):
+        diag=diagnostics.Diagnostics(self.settings);root=Path(diag.data['state_dir'])
+        (root/'receiver_backup.log').write_text('trace='+json.dumps({'event':'RECEIVER_OWNER_ACQUIRED','node':'receiver_backup',
+            'message':'PRIVATE-RAW','token':'PRIVATE-TOKEN'})+'\n')
+        with mock.patch.object(diag,'status',return_value={'sender':{},'receiver':{}}): archive=diag.export(self.root/'backup.zip')
+        with zipfile.ZipFile(archive) as z: text=z.read('events.jsonl').decode()
+        self.assertIn('RECEIVER_OWNER_ACQUIRED',text);self.assertIn('receiver_backup',text)
+        self.assertNotIn('PRIVATE',text)

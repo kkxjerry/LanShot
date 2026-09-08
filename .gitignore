@@ -9,3 +9,4 @@ __pycache__/
 .bailian_api_key
 screenshot-sender/native_redactor
 screenshot-sender/LanShotAudioCapture.app/
+capture-exclusion-demo/build/

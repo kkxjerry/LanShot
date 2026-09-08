@@ -12,11 +12,6 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from reliability import TaskStore, Conflict
 from migrate_p0_receiver import migrate
 
-try:
-    import tkinter as _tkinter
-except ImportError:
-    _tkinter = None
-
 class P0ReceiverMigrationTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
@@ -49,31 +44,3 @@ class P0ReceiverMigrationTests(unittest.TestCase):
         (self.old/'capture_ledger.json').write_text('{')
         with self.assertRaises(ValueError): migrate(self.store,self.old,'default','prompt')
 
-@unittest.skipUnless(
-    _tkinter is not None and (
-        os.environ.get('DISPLAY') or os.environ.get('LANSHOT_RUN_GUI_TESTS') == '1'
-    ),
-    'GUI smoke requires Tk and a display; run with a Tk-enabled Python under Xvfb or set LANSHOT_RUN_GUI_TESTS=1',
-)
-class NativeGuiSmokeTests(unittest.TestCase):
-    def test_visible_window_renders_result_and_acknowledges_matching_version(self):
-        import tkinter as tk
-        import diagnostics
-        diag=mock.Mock()
-        diag.view.return_value={'current':{'id':'test-id','state':'complete','answer':'Synthetic answer','code':'','profile':'default'},
-                                'previous':None,'version':3,'profile':'default','stage':'complete','sender':{}}
-        root=tk.Tk()
-        root.after(1800,root.destroy)
-        with mock.patch('tkinter.Tk',return_value=root): diagnostics.gui(diag)
-        self.assertTrue(any(c.args == ('/api/displayed',{'id':'test-id','version':3}) for c in diag.request.call_args_list))
-    def test_receiver_offline_window_remains_responsive(self):
-        import tkinter as tk
-        import diagnostics
-        diag=mock.Mock()
-        diag.view.return_value={'current':None,'previous':None,'version':0,'profile':'default','stage':'receiver_unavailable',
-                                'sender':{'status':'degraded','queue':{'counts':{'pending':3}}}}
-        root=tk.Tk(); completed=[]
-        root.after(1300,lambda:(completed.append(True),root.destroy()))
-        with mock.patch('tkinter.Tk',return_value=root): diagnostics.gui(diag)
-        self.assertEqual(completed,[True])
-        diag.request.assert_not_called()

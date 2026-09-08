@@ -77,6 +77,8 @@ class Config:
     queue_max_items: int = 100
     queue_max_bytes: int = 256 * 1024 * 1024
     upload_max_attempts: int = 6
+    routes_file: Path | None = None
+    display_dir: Path | None = None
 
     def __post_init__(self) -> None:
         parsed = urllib.parse.urlsplit(self.server_url)
@@ -110,6 +112,9 @@ class Config:
         object.__setattr__(self, "server_url", normalized)
         object.__setattr__(self, "retry_delays", tuple(self.retry_delays))
         object.__setattr__(self, "spool_dir", Path(self.spool_dir).expanduser())
+        for name in ("routes_file", "display_dir"):
+            if getattr(self,name) is not None:
+                object.__setattr__(self,name,Path(getattr(self,name)).expanduser())
         object.__setattr__(
             self, "blocked_words_file", Path(self.blocked_words_file).expanduser()
         )
@@ -140,6 +145,8 @@ class Config:
         output["retry_delays"] = list(self.retry_delays)
         output["spool_dir"] = str(self.spool_dir)
         output["blocked_words_file"] = str(self.blocked_words_file)
+        for name in ("routes_file", "display_dir"):
+            output[name] = str(getattr(self,name)) if getattr(self,name) is not None else None
         path = path.expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
@@ -577,7 +584,7 @@ class MacF24Listener:
             self._core_foundation.CFRunLoopStop(ctypes.c_void_p(self._run_loop))
 
 
-def sender_readiness(config: Config) -> dict[str, Any]:
+def sender_readiness(config: Config, client: Any = None) -> dict[str, Any]:
     status: dict[str, Any] = {"service": "lanshot-sender", "build": BUILD,
                               "local": "ready", "receiver": "unknown", "capture_permission": "unverified"}
     try:
@@ -593,7 +600,17 @@ def sender_readiness(config: Config) -> dict[str, Any]:
         status["local"] = "spool_or_redaction_config_unreadable"
         trace("READINESS_STORAGE_FAILED", **error_info(error))
     try:
-        health = HTTPClient(config).health()
+        if client is not None:
+            health = client.health()
+        elif config.routes_file:
+            from multi_receiver import build_client
+            probe = build_client(config,start_embedded=False)
+            try:
+                health = probe.health()
+            finally:
+                probe.close()
+        else:
+            health = HTTPClient(config).health()
         status["receiver"] = "ready"
         status["model"] = health.get("analyzer", "unknown")
     except Exception as error:
@@ -625,6 +642,10 @@ class SenderService:
         self.fault = threading.Event()
         self.last_capture: dict[str, Any] = {}
         self.receiver_state = "not_checked"
+        target = getattr(client, "queue_target", None)
+        self.queue_target = target if isinstance(target,str) else config.server_url
+        budget = getattr(client, "operation_budget", None)
+        self.upload_budget = budget if isinstance(budget,(int,float)) else config.request_timeout_seconds + 15
 
     def _guarded(self, name: str, function: Callable[[], None]) -> None:
         try:
@@ -637,7 +658,7 @@ class SenderService:
             self.wake.set()
 
     def run(self) -> None:
-        checks = sender_readiness(self.config) if not self.stop_event.is_set() else {"local": "not_checked"}
+        checks = sender_readiness(self.config,self.client) if not self.stop_event.is_set() else {"local": "not_checked"}
         self.heartbeat.write("starting", checks=checks)
         callbacks = ((self._trigger_hotkey_capture, lambda: self._trigger_voice_control("previous"),
                       lambda: self._trigger_voice_control("next")) if self.written_mode
@@ -687,21 +708,21 @@ class SenderService:
         with self.capture_lock:
             if self.store.get(str(task_id)) is not None:
                 return str(task_id)
-            self.last_capture = {"id": str(task_id), "state": "capturing"}
+            self.last_capture = {"id": str(task_id), "state": "capturing", "at": time.time()}
             self.heartbeat.progress("capture", "capturing", deadline=90)
             image_path: Path | None = None
             try:
                 image_path = self.screenshotter.capture(task_id)
                 self.store.enqueue(task_id, image_path.read_bytes(), kind=kind,
-                                   target=self.config.server_url, profile=self.config.profile)
-                self.last_capture = {"id": str(task_id), "state": "queued"}
+                                   target=self.queue_target, profile=self.config.profile)
+                self.last_capture = {"id": str(task_id), "state": "queued", "at": time.time()}
                 trace("QUEUE_PERSISTED", task_id, kind=kind)
                 # The durable database now owns a byte-identical redacted payload.
                 image_path.unlink(missing_ok=True)
                 self.wake.set()
                 return str(task_id)
             except Exception as error:
-                self.last_capture = {"id": str(task_id), "state": "failed", "code": type(error).__name__}
+                self.last_capture = {"id": str(task_id), "state": "failed", "code": type(error).__name__, "at": time.time()}
                 trace("CAPTURE_OR_ENQUEUE_FAILED", task_id, **error_info(error))
                 # Do not delete a successfully captured/redacted file on enqueue failure.
                 raise
@@ -724,7 +745,7 @@ class SenderService:
 
     def _deliver_pending(self, job: dict[str, Any]) -> None:
         trace("UPLOAD_START", job["id"], attempt=job["attempts"])
-        self.heartbeat.progress("upload", "uploading", deadline=self.config.request_timeout_seconds + 15)
+        self.heartbeat.progress("upload", "uploading", deadline=self.upload_budget)
         try:
             self.client.upload_record(job)
             self.store.delivered(job)
@@ -735,6 +756,9 @@ class SenderService:
                 trace("UPLOAD_STALE_LEASE", job["id"])
                 return
             decision = retry_decision(error, job["attempts"], max_attempts=self.config.upload_max_attempts)
+            from multi_receiver import OutcomeUnknown
+            if isinstance(error, OutcomeUnknown) and decision.action != "retry":
+                decision = RetryDecision("uncertain", "receiver_ack_unknown_route_remains_pinned")
             self.store.release(job, decision)
             trace("UPLOAD_RETRY_WAIT" if decision.action == "retry" else "UPLOAD_PAUSED",
                   job["id"], code=decision.code, delay=decision.delay, **error_info(error))
@@ -742,8 +766,8 @@ class SenderService:
             self.heartbeat.progress("upload", "idle")
 
     def _retry_pending_once(self) -> bool:
-        job = self.store.claim(target=self.config.server_url, profile=self.config.profile,
-                               lease_seconds=self.config.request_timeout_seconds + 30)
+        job = self.store.claim(target=self.queue_target, profile=self.config.profile,
+                               lease_seconds=self.upload_budget + 30)
         if job is None:
             return False
         self._deliver_pending(job)
@@ -759,7 +783,7 @@ class SenderService:
 
     def _probe_loop(self) -> None:
         while not self.stop_event.is_set():
-            self.heartbeat.progress("probe", "checking_receiver", deadline=10)
+            self.heartbeat.progress("probe", "checking_receiver", deadline=self.upload_budget)
             try:
                 self.client.health()
                 self.receiver_state = "ready"
@@ -919,22 +943,27 @@ def run_service(config_path: Path, written_mode: bool = False) -> None:
         if not voice_url or not voice_token:
             raise ConfigError("written mode requires LANSHOT_VOICE_URL and LANSHOT_VOICE_TOKEN")
         voice_controller = VoiceController(voice_url, voice_token)
-    service = SenderService(
-        config,
-        screenshotter,
-        HTTPClient(config),
-        written_mode=written_mode,
-        voice_controller=voice_controller,
-    )
-
-    def stop_service(signum: int, frame: object) -> None:
-        LOGGER.info("received signal %s", signum)
-        service.stop()
-
-    signal.signal(signal.SIGTERM, stop_service)
-    signal.signal(signal.SIGINT, stop_service)
     with InstanceLock(config.spool_dir / "sender.lock"):
-        service.run()
+        if config.routes_file:
+            from multi_receiver import build_client
+            client = build_client(config)
+        else:
+            client = HTTPClient(config)
+        service = SenderService(config, screenshotter, client,
+            page_command_path=(config.display_dir / "page.txt") if config.display_dir else DEFAULT_PAGE_COMMAND_PATH,
+            written_mode=written_mode, voice_controller=voice_controller)
+
+        def stop_service(signum: int, frame: object) -> None:
+            LOGGER.info("received signal %s", signum)
+            service.stop()
+
+        signal.signal(signal.SIGTERM, stop_service)
+        signal.signal(signal.SIGINT, stop_service)
+        try:
+            service.run()
+        finally:
+            if config.routes_file:
+                client.close()
 
 
 def capture_test(output: Path, include_cursor: bool) -> None:
@@ -1007,15 +1036,17 @@ def main(argv: list[str] | None = None) -> int:
             run_service(arguments.config, arguments.written_mode)
         elif arguments.command == "once":
             config = Config.load(arguments.config)
-            SenderService(
-                config,
-                Screenshotter(
-                    config.spool_dir,
-                    config.include_cursor,
-                    redactor=NativeRedactor(config.blocked_words_file),
-                ),
-                HTTPClient(config),
-            ).handle_manual_capture()
+            if config.routes_file:
+                from multi_receiver import build_client
+                client = build_client(config,start_embedded=False)
+            else:
+                client = HTTPClient(config)
+            try:
+                SenderService(config, Screenshotter(config.spool_dir,config.include_cursor,
+                    redactor=NativeRedactor(config.blocked_words_file)), client).handle_manual_capture()
+            finally:
+                if config.routes_file:
+                    client.close()
             print("Capture persisted in the queue. The managed sender delivers it; upload is not analysis completion.")
         elif arguments.command == "doctor":
             config = Config.load(arguments.config)

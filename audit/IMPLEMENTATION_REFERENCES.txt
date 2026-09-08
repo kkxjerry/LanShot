@@ -1,0 +1,7 @@
+机制参考（不是本机验收证据）
+SQLite rollback journal locking: https://www.sqlite.org/lockingv3.html
+SQLite WAL and local-machine restrictions: https://www.sqlite.org/wal.html
+Idempotent retries and ambiguous outcomes: https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/
+Apple user-level launchd: https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html
+
+这些文档支持实现机制的选择，不能证明Mac原生UI、权限、真实模型或牛客兼容已通过。

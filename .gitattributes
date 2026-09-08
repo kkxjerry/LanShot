@@ -1,0 +1,4 @@
+# Preserve delivered audit evidence byte-for-byte, including patch context whitespace.
+audit/*.patch whitespace=-blank-at-eof,-trailing-space
+audit/CHANGELOG_FILES.txt whitespace=-blank-at-eof
+screenshot-sender/tests/test_migration.py whitespace=-blank-at-eof

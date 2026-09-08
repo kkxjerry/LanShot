@@ -1,28 +1,40 @@
-# LanShot P1 更新包
+# LanShot P1 修订版：原生显示与多接收路径
 
-本目录已将 P1 独立更新包合并到 `develop` 管理的源码中，但尚未部署或启动服务。
-合并时以本机 P0 为共同基线做了核对，保留了音频源码、笔试提示词和音频启停脚本；
-P1 的 SQLite 队列、持久确认和 LaunchAgent 管理实现取代了 P0 中对应的临时可靠性实现。
+版本：lanshot-p1r2-20260908.1。
 
-先阅读 `MERGE_NOTES_2026-09-08.md` 和 `P1_DELIVERY_CN.txt`。旧使用说明留在
-`README_LEGACY.md`，不要按其中的旧 install/启动方式部署 P1。
+这是对已上传 P1 包的修订源码，不是用户 Mac 当前目录的部署或已合并提交。原始 P1 ZIP、原 P0 目录和用户运行数据没有改动。
 
-安全演练（不截图、不调用真实模型、不启动 launchd）：
+正式显示端恢复为 `../capture-exclusion-demo` 的原生窗口。Tk 窗口及 GUI 命令已删除；诊断保留为命令行工具。
+
+接收链路支持内嵌、本地双 HTTP 服务和显式启用的远程 HTTPS 服务。它们不是并行群发：本地实例共用任务库及执行锁，独立远程实例按持久任务归属受控切换。
+
+先做安全演练：
 
 ```sh
 python3 smoke_p1.py
+python3 smoke_multi.py
 python3 -m unittest discover -s tests -v
 ```
 
-macOS 独立安装准备（不修改旧 P0 目录）：
+这些演练不截取桌面、不调用付费模型、不启动 launchd、不修改用户运行目录。
+
+在 macOS 的独立解压目录准备新版配置：
 
 ```sh
-python3 manage_services.py configure
+sh ../capture-exclusion-demo/build.sh
+sh build_native_redactor.command
+python3 manage_services.py configure --mode redundant
 python3 manage_services.py start --dry-run
 ```
 
-配置使用独立的 LanShotP1 状态目录、8788 端口，且初始禁用。
-在完成代码核对、停止旧监听服务、确认权限后，再显式运行 `python3 manage_services.py start`。
+配置默认禁用，默认本地端口 8788/8789。旧设置存在时拒绝覆盖。安装或迁移前，必须先按 `P1_DELIVERY_CN.txt` 检查旧进程、权限、数据备份和路径。不要直接覆盖当前 P0 工作区。
 
-完整变更、测试证据、风险边界和迁移说明见 `MERGE_NOTES_2026-09-08.md`、
-`P1_DELIVERY_CN.txt`、`VALIDATION_REPORT.json`、`COMPATIBILITY_MATRIX.json`。
+完成本机准备后，显式启动原生显示：
+
+```sh
+sh start_assessment.command
+python3 diagnostics.py status
+python3 diagnostics.py routes
+```
+
+完整改动、删除清单、使用方式和未验证边界见 `P1_DELIVERY_CN.txt`。远程部署见 `deployment/README.txt`。逐文件清单见 `../audit/CHANGELOG_FILES.txt`，完整差异见 `../audit/`。测试结果见 `VALIDATION_REPORT.json` 和 `validation/`。

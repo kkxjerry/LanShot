@@ -1,83 +1,131 @@
 {
-  "build": "lanshot-p1-20260907.1",
-  "delivery_type": "independent_source_update_package",
-  "source_basis": "uploaded_snapshot; latest full local P0 checkout was not accessible",
-  "local_mac_modified": false,
-  "local_services_restarted": false,
-  "committed_to_local_develop": false,
-  "devspaces_attempt_result": "tool disabled",
+  "build": "lanshot-p1r2-20260908.1",
+  "generated_at_utc": "2026-09-08T07:53:10.133550+00:00",
+  "delivery_type": "audited_source_revision_of_uploaded_P1_plus_restored_native_source",
+  "source_basis": {
+    "P1_archive": "LanShot_P1_实现与测试包_2026-09-07.zip",
+    "P1_sha256": "45b1efa914e4c344b488fb3d595d9d61fcbfdb0ba0cf002944b2a4598c653c6c",
+    "original_archive": "ec11e7b2-5770-4dae-a1f0-35248cce75b3.zip",
+    "original_sha256": "36fdee3791b4efa349ac294e89a30fe6e9cf04f41a53f2c48a09f2565d9039ea",
+    "latest_local_mac_P0_read": false,
+    "native_source": "original uploaded capture-exclusion-demo"
+  },
+  "deployment": {
+    "user_mac_modified": false,
+    "user_mac_services_restarted": false,
+    "user_develop_committed": false,
+    "real_remote_server_deployed": false,
+    "tool_access_this_turn": "DevSpaces schemas discovered only; no successful local execution"
+  },
   "environment": {
     "os": "Linux",
     "python": "3.13.5",
-    "gui_display": "Xvfb/Tk 8.6"
+    "sqlite": "3.46.1",
+    "database_journal": "DELETE/FULL",
+    "display_gui": "Tk removed; no native AppKit runtime on Linux"
   },
   "tests": {
-    "command": "xvfb-run -a python -m unittest discover -s tests -v",
-    "run": 136,
-    "passed": 136,
+    "command": "env -u DISPLAY python -m unittest discover -s tests -v",
+    "run": 197,
+    "passed": 197,
     "failed": 0,
     "skipped": 0,
-    "elapsed_seconds": 21.715
+    "elapsed_seconds": 24.64,
+    "original_P1": 136,
+    "removed_Tk_tests": 2,
+    "retained_non_Tk_tests": 134,
+    "new_tests": 63,
+    "by_file": {
+      "test_management_diagnostics.py": 20,
+      "test_migration.py": 5,
+      "test_multi_receiver.py": 57,
+      "test_p1_integration.py": 34,
+      "test_receiver_service.py": 10,
+      "test_reliability.py": 48,
+      "test_remote_entry.py": 4,
+      "test_sender_service.py": 19
+    },
+    "evidence": "validation/test-results.txt"
   },
-  "compileall": "passed",
-  "shell_syntax": {
-    "interpreter": "sh -n",
-    "scripts": [
-      "build_native_redactor.command",
-      "open_diagnostics.command",
-      "start_assessment.command",
-      "start_written.command",
-      "stop_assessment.command",
-      "stop_written.command"
-    ],
-    "result": "passed"
+  "checks": {
+    "python_compileall": "passed",
+    "command_scripts_sh_n": "passed",
+    "command_script_count": 6,
+    "native_build_script_sh_n": "passed",
+    "swift_frontend_parse": "passed",
+    "swift_AppKit_compile_link_sign": "not_run",
+    "safe_original_smoke": {
+      "status": "passed",
+      "capture": "synthetic",
+      "transport": "real_loopback_HTTP",
+      "model": "stub_not_paid",
+      "upload": "delivered",
+      "analysis": "complete",
+      "duplicate_model_calls": 0,
+      "user_state_modified": false
+    },
+    "safe_multi_receiver_smoke": {
+      "build": "lanshot-p1r2-20260908.1",
+      "status": "passed",
+      "cases": [
+        {
+          "selected": "embedded",
+          "durable_upload": true,
+          "result_projection": "matched"
+        },
+        {
+          "selected": "local-primary",
+          "durable_upload": true,
+          "result_projection": "matched"
+        },
+        {
+          "selected": "local-backup",
+          "durable_upload": true,
+          "result_projection": "matched"
+        }
+      ],
+      "tasks": 3,
+      "stub_model_calls": 3,
+      "duplicate_model_calls": 0,
+      "real_model_calls": 0,
+      "desktop_capture": false,
+      "user_state_modified": false,
+      "transport": "direct_function_and_real_loopback_HTTP",
+      "native_app_rendered": false,
+      "remote_host_deployed": false
+    }
   },
-  "safe_smoke": {
-    "status": "passed",
-    "capture": "synthetic",
-    "transport": "real_loopback_HTTP",
-    "model": "stub_not_paid",
-    "upload": "delivered",
-    "analysis": "complete",
-    "duplicate_model_calls": 0,
-    "user_state_modified": false
+  "integration_evidence": {
+    "two_local_HTTP_instances": "actual loopback tests; same cluster and shared database",
+    "embedded_no_HTTP": "actual same-process runtime with stub model",
+    "remote_HTTPS": "actual loopback TLS listener with dedicated test-trust context and token; not public deployment",
+    "SIGKILL_queued": "actual subprocess killed; queued job recovered once",
+    "SIGKILL_processing": "actual subprocess killed; job marked uncertain, no blind second model call",
+    "display": "Python native-projection/ack contract tested; Swift syntax parsed only"
   },
-  "coverage": [
-    "real loopback HTTP",
-    "both upload endpoints durable dedup",
-    "concurrent duplicate submission",
-    "capture/upload lock separation",
-    "destination/profile isolation",
-    "atomic database rollback",
-    "queue/byte limits",
-    "TTL and retry budgets",
-    "stale lease fencing",
-    "source ordering",
-    "current/previous answer isolation",
-    "unknown model outcomes require confirmation",
-    "launchd command generation and mock management",
-    "restart budget",
-    "actual subprocess abnormal exit",
-    "actual SIGKILL child test",
-    "GUI rendering/close cleanup",
-    "redacted export whitelist",
-    "P0 sender/receiver migration"
-  ],
   "not_verified": [
-    "macOS launchctl actual bootstrap/stop/restart",
-    "macOS Screen Recording/Input Monitoring permissions",
-    "native_redactor compilation and real screenshots",
-    "sleep/wake recovery on real Mac",
-    "real model authentication/quality",
-    "original overlay rendering",
-    "Nowcoder ordinary/fullscreen/client compatibility",
-    "merge against current local P0 working copy"
+    "Mac AppKit compile/link/sign and actual rendering",
+    "macOS launchctl bootstrap/stop/sleep/wake",
+    "actual Screen Recording/Input Monitoring permissions and native redactor operation",
+    "real model API authentication, cost and answer quality",
+    "Nowcoder ordinary/fullscreen/client/external-display compatibility",
+    "real remote host TLS/permissions/service installation",
+    "merge/migration against latest user Mac P0 or previously running P1 database"
   ],
-  "notes": [
-    "Original 29 tests were retained with assertions updated for asynchronous delivery/new state contract.",
-    "The local P0 37-test version was not obtained in full and is not the claimed test baseline.",
-    "Without DISPLAY or LANSHOT_RUN_GUI_TESTS=1, 2 GUI tests skip intentionally.",
-    "No exactly-once guarantee for upstream model execution or billing."
+  "guarantee_boundaries": [
+    "No global exactly-once model/billing guarantee",
+    "After possibly delivered POST, task pinned to original cluster",
+    "Local replicas share disk/OS failure domain",
+    "Remote disabled without explicit allow_remote authorization",
+    "No automatic independent-cluster takeover of uncertain model execution",
+    "No guarantee window content is excluded from third-party capture"
   ],
-  "patch_dry_run_against_uploaded_baseline": "passed"
+  "cleanup": [
+    "Tk GUI and old GUI launcher removed",
+    "2 Tk tests removed; migration tests retained",
+    "old installation README removed",
+    "stale validation and patches regenerated",
+    "no runtime DB/screenshots/credentials/native compiled binaries included"
+  ],
+  "terminal_output_note": "Test stdout may contain terminal-clear/TERM messages; tests exited successfully. Raw output preserved."
 }

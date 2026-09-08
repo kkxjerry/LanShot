@@ -1,0 +1,308 @@
+--- a/capture-exclusion-demo/CaptureExclusionDemo.swift
++++ b/capture-exclusion-demo/CaptureExclusionDemo.swift
+@@ -111,6 +111,9 @@
+ final class LatestAnswerMonitor {
+     private let url: URL
+     private let pageCommandURL: URL
++    private let stateURL: URL?
++    private let displayDirectory: URL
++    private var lastViewKey: String?
+     private var timer: Timer?
+     private var lastAnswer: String?
+     private var lastPageCommand: String?
+@@ -122,10 +125,33 @@
+     var onToggleVisibility: (() -> Void)?
+ 
+     init(url: URL? = nil, pageCommandURL: URL? = nil) {
+-        let dataDirectory = FileManager.default.homeDirectoryForCurrentUser
+-            .appendingPathComponent(".local/share/lanshot-receiver")
++        let arguments = ProcessInfo.processInfo.arguments
++        let index = arguments.firstIndex(of: "--lanshot-display-dir")
++        let configured: String? = index.flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
++            ?? ProcessInfo.processInfo.environment["LANSHOT_DISPLAY_DIR"]
++        let dataDirectory = configured.map { URL(fileURLWithPath: $0, isDirectory: true) }
++            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/lanshot-receiver")
++        self.displayDirectory = dataDirectory
+         self.url = url ?? dataDirectory.appendingPathComponent("latest.txt")
+         self.pageCommandURL = pageCommandURL ?? dataDirectory.appendingPathComponent("page.txt")
++        self.stateURL = configured == nil ? nil : dataDirectory.appendingPathComponent("latest_state.json")
++    }
++
++    func requestCapture() {
++        guard stateURL != nil else { return }
++        writeJSON(["id": UUID().uuidString.lowercased(), "at": Date().timeIntervalSince1970],
++                  name: "capture_request.json")
++    }
++
++    private func writeJSON(_ value: [String: Any], name: String) {
++        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) else { return }
++        do {
++            try FileManager.default.createDirectory(at: displayDirectory, withIntermediateDirectories: true,
++                                                    attributes: [.posixPermissions: 0o700])
++            let path = displayDirectory.appendingPathComponent(name)
++            try data.write(to: path, options: .atomic)
++            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
++        } catch { NSLog("LanShot: cannot write display metadata") }
+     }
+ 
+     func start() {
+@@ -145,9 +171,16 @@
+     func stop() {
+         timer?.invalidate()
+         timer = nil
++        if stateURL != nil {
++            writeJSON(["status": "stopped", "at": Date().timeIntervalSince1970], name: "overlay_status.json")
++        }
+     }
+ 
+     private func reloadAnswer() {
++        if let stateURL = stateURL {
++            reloadVersionedState(stateURL)
++            return
++        }
+         guard
+             let answer = readText(from: url),
+             !answer.isEmpty,
+@@ -156,6 +189,38 @@
+ 
+         lastAnswer = answer
+         onChange?(answer)
++    }
++
++    private func reloadVersionedState(_ path: URL) {
++        writeJSON(["status": "running", "at": Date().timeIntervalSince1970,
++                   "protocol": 1], name: "overlay_status.json")
++        guard let data = try? Data(contentsOf: path), data.count <= 2 * 1024 * 1024,
++              let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
++              value["schema"] as? Int == 1, let version = value["version"] as? Int,
++              let stream = value["stream_id"] as? String, let at = value["at"] as? Double,
++              let text = value["text"] as? String else {
++            let message = "尚未收到有效任务状态；请检查显示桥接服务。"
++            if lastAnswer != message { lastAnswer = message; onChange?(message) }
++            return
++        }
++        let stale = Date().timeIntervalSince1970 - at > 12 || at > Date().timeIntervalSince1970 + 5
++        let displayed = stale ? "状态更新已中断；以下是缓存，不代表任务仍在正常处理。\n\n" + text : text
++        let key = "\(stream):\(version):\(stale)"
++        guard key != lastViewKey || displayed != lastAnswer else { return }
++        lastViewKey = key
++        lastAnswer = displayed
++        guard let onChange = onChange else { return }
++        onChange(displayed)
++        if !stale, let current = value["current"] as? [String: Any],
++           current["state"] as? String == "complete", let task = current["id"] as? String {
++            // A main-loop turn after applying text: view application, not proof of human reading.
++            DispatchQueue.main.async { [weak self] in
++                guard self?.lastViewKey == key else { return }
++                self?.writeJSON(["stream_id": stream, "task_id": task, "version": version,
++                                 "consumer": "native-overlay", "at": Date().timeIntervalSince1970],
++                                name: "display_ack.json")
++            }
++        }
+     }
+ 
+     private func reloadPageCommand() {
+@@ -168,8 +233,10 @@
+             onMoveToMouse?()
+         } else if command?.hasPrefix("toggle ") == true {
+             onToggleVisibility?()
+-        } else {
++        } else if command?.hasPrefix("down ") == true {
+             onPageDown?()
++        } else if stateURL != nil && command?.hasPrefix("quit ") == true {
++            NSApp.terminate(nil)
+         }
+     }
+ 
+@@ -695,6 +762,7 @@
+     private let answerMonitor = LatestAnswerMonitor()
+     private var panel: FloatingPanel?
+     private var settingsController: SettingsWindowController?
++    private var statusItem: NSStatusItem?
+ 
+     func applicationDidFinishLaunching(_ notification: Notification) {
+         let panel = FloatingPanel(preferences: preferences)
+@@ -717,12 +785,28 @@
+         answerMonitor.onToggleVisibility = { [weak self] in
+             self?.panel?.toggleVisibility()
+         }
++        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
++        item.button?.title = "LanShot"
++        let menu = NSMenu()
++        let captureItem = NSMenuItem(title: "截图并分析", action: #selector(manualCapture), keyEquivalent: "")
++        captureItem.target = self
++        menu.addItem(captureItem)
++        let settingsItem = NSMenuItem(title: "显示设置", action: #selector(openSettingsMenu), keyEquivalent: "")
++        settingsItem.target = self
++        menu.addItem(settingsItem)
++        menu.addItem(NSMenuItem.separator())
++        menu.addItem(NSMenuItem(title: "退出显示", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
++        item.menu = menu
++        statusItem = item
+         answerMonitor.start()
+         panel.orderFrontRegardless()
+         DispatchQueue.main.async { [weak self] in
+             self?.showSettings()
+         }
+     }
++
++    @objc private func manualCapture() { answerMonitor.requestCapture() }
++    @objc private func openSettingsMenu() { showSettings() }
+ 
+     func showSettings() {
+         if settingsController == nil {
+--- a/capture-exclusion-demo/Info.plist
++++ b/capture-exclusion-demo/Info.plist
+@@ -2,29 +2,31 @@
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+ <plist version="1.0">
+ <dict>
+-    <key>CFBundleDevelopmentRegion</key>
+-    <string>en</string>
+-    <key>CFBundleDisplayName</key>
+-    <string>Capture Exclusion Demo</string>
+-    <key>CFBundleExecutable</key>
+-    <string>CaptureExclusionDemo</string>
+-    <key>CFBundleIdentifier</key>
+-    <string>dev.demo.capture-exclusion</string>
+-    <key>CFBundleInfoDictionaryVersion</key>
+-    <string>6.0</string>
+-    <key>CFBundleName</key>
+-    <string>CaptureExclusionDemo</string>
+-    <key>CFBundlePackageType</key>
+-    <string>APPL</string>
+-    <key>CFBundleShortVersionString</key>
+-    <string>1.0</string>
+-    <key>CFBundleVersion</key>
+-    <string>1</string>
+-    <key>LSMinimumSystemVersion</key>
+-    <string>13.0</string>
+-    <key>LSUIElement</key>
+-    <true/>
+-    <key>NSHighResolutionCapable</key>
+-    <true/>
++	<key>CFBundleDevelopmentRegion</key>
++	<string>en</string>
++	<key>CFBundleDisplayName</key>
++	<string>Capture Exclusion Demo</string>
++	<key>CFBundleExecutable</key>
++	<string>CaptureExclusionDemo</string>
++	<key>CFBundleIdentifier</key>
++	<string>dev.demo.capture-exclusion</string>
++	<key>CFBundleInfoDictionaryVersion</key>
++	<string>6.0</string>
++	<key>CFBundleName</key>
++	<string>CaptureExclusionDemo</string>
++	<key>CFBundlePackageType</key>
++	<string>APPL</string>
++	<key>CFBundleShortVersionString</key>
++	<string>1.0</string>
++	<key>CFBundleVersion</key>
++	<string>2</string>
++	<key>LSMinimumSystemVersion</key>
++	<string>13.0</string>
++	<key>LSUIElement</key>
++	<true/>
++	<key>LanShotDisplayProtocol</key>
++	<integer>1</integer>
++	<key>NSHighResolutionCapable</key>
++	<true/>
+ </dict>
+ </plist>
+--- a/capture-exclusion-demo/README.md
++++ b/capture-exclusion-demo/README.md
+@@ -1,43 +1,9 @@
+-# Capture Exclusion Demo
++# 原生悬浮显示接入修订
+ 
+-A minimal native macOS floating panel that shows the latest AI answer while
+-asking WindowServer to omit it from supported screen-capture pipelines.
++原生窗口、字体/颜色设置、翻页、移动等既有交互保留。新增菜单手动截图、可配置状态目录、版本化状态读取、显示回执和失联提示。不使用 Tk。
+ 
+-## Run
++在 macOS 编译：`sh build.sh`。编译成功前不删除旧应用，替换时保留时间戳备份。该修订包在 Linux 完成 Python/接口测试，不能据此宣称 Swift/AppKit 已编译或在牛客验证。
+ 
+-```bash
+-./run.sh
+-```
++应用通过 `--lanshot-display-dir /绝对路径` 读取新目录中的 `latest_state.json` 和 `page.txt`，写入 `display_ack.json` 和 `overlay_status.json`。无此参数时保留旧目录读取兼容，但不能宣称版本回执已接入。
+ 
+-The panel stays above normal windows, follows all Spaces, does not appear in the
+-Dock, and can be dragged. Right-click anywhere in the transparent panel to open
+-settings. Settings are applied live and saved automatically.
+-
+-The settings panel controls the window width and height, font size, text color,
+-and opacity. It also includes the saved Configuration A preset. Capture
+-exclusion is always on and cannot be disabled from settings.
+-
+-The panel watches `~/.local/share/lanshot-receiver/latest.txt` and refreshes
+-automatically when the receiver writes a new answer. The receiver uses an
+-atomic file replacement, so the panel never reads a half-written answer.
+-Pressing `F22` writes a page command through the sender and scrolls the answer
+-down by one page. Pressing it on the last page returns to the beginning.
+-
+-Moving the pointer into the transparent panel raises visible content to at least
+-15% opacity. Moving it away restores the saved opacity.
+-
+-## Test
+-
+-1. Confirm that the panel is visible near the top of the local display.
+-2. Take a macOS screenshot or start a meeting screen share.
+-3. Inspect the captured output from another device or participant view.
+-
+-The relevant native setting is:
+-
+-```swift
+-window.sharingType = .none
+-```
+-
+-This is best-effort capture exclusion, not an absolute security boundary. A
+-capture tool may ignore the setting, and a camera or hardware capture device
+-will still see the physical display.
++原源码中的窗口共享属性没有新增或加强；它们不构成免于系统/第三方采集的保证。此次没有实现或验证规避平台检测的能力。
+--- a/capture-exclusion-demo/build.sh
++++ b/capture-exclusion-demo/build.sh
+@@ -1,24 +1,20 @@
+-#!/bin/zsh
+-set -euo pipefail
+-
+-SCRIPT_DIR="${0:A:h}"
++#!/bin/sh
++set -eu
++SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ BUILD_DIR="$SCRIPT_DIR/build"
+-APP_BUNDLE="$BUILD_DIR/CaptureExclusionDemo.app"
+-CONTENTS_DIR="$APP_BUNDLE/Contents"
+-MACOS_DIR="$CONTENTS_DIR/MacOS"
+-RESOURCES_DIR="$CONTENTS_DIR/Resources"
+-
+-rm -rf "$APP_BUNDLE"
+-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+-
+-xcrun swiftc \
+-  -parse-as-library \
+-  -O \
+-  -framework AppKit \
+-  "$SCRIPT_DIR/CaptureExclusionDemo.swift" \
+-  -o "$MACOS_DIR/CaptureExclusionDemo"
+-
+-cp "$SCRIPT_DIR/Info.plist" "$CONTENTS_DIR/Info.plist"
+-codesign --force --sign - "$APP_BUNDLE"
+-
+-echo "$APP_BUNDLE"
++mkdir -p "$BUILD_DIR"
++TEMP=$(mktemp -d "$BUILD_DIR/.native-build.XXXXXX")
++trap 'rm -rf "$TEMP"' EXIT HUP INT TERM
++APP="$TEMP/CaptureExclusionDemo.app"
++mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
++xcrun swiftc -parse-as-library -O -framework AppKit "$SCRIPT_DIR/CaptureExclusionDemo.swift" -o "$APP/Contents/MacOS/CaptureExclusionDemo"
++cp "$SCRIPT_DIR/Info.plist" "$APP/Contents/Info.plist"
++codesign --force --sign - "$APP"
++FINAL="$BUILD_DIR/CaptureExclusionDemo.app"
++if [ -e "$FINAL" ]; then
++    BACKUP="$FINAL.previous-$(date +%s)"
++    [ ! -e "$BACKUP" ] || { echo "Backup path already exists; build not installed."; exit 1; }
++    mv "$FINAL" "$BACKUP"
++fi
++mv "$APP" "$FINAL"
++printf '%s\n' "$FINAL"

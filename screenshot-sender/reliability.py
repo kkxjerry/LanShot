@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-BUILD = "lanshot-p1-20260907.1"
+BUILD = "lanshot-p1r2-20260908.1"
 PROTOCOL = 2
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
 TERMINAL = ("delivered", "complete", "cancelled", "expired")
@@ -158,7 +158,9 @@ class TaskStore:
         self.clock = clock
         private_dir(self.path.parent)
         with contextlib.closing(self._connect()) as con:
-            con.execute("PRAGMA journal_mode=WAL")
+            # Rollback journal avoids the WAL-reset race on older system SQLite builds.
+            # Stop old services before upgrading an existing WAL database.
+            con.execute("PRAGMA journal_mode=DELETE")
             con.executescript(SCHEMA)
         self.path.chmod(0o600)
         with self.tx() as con:
@@ -168,6 +170,16 @@ class TaskStore:
             con.execute("INSERT OR IGNORE INTO meta VALUES ('origin',?)", (str(uuid.uuid4()),))
             con.execute("INSERT OR IGNORE INTO meta VALUES ('version','0')")
             self.origin = self._meta(con, "origin")
+
+    def bind_receiver(self, profile: str, prompt: str) -> str:
+        signature = hashlib.sha256(prompt.encode()).hexdigest()
+        with self.tx() as con:
+            for key, value in (("receiver_profile", profile), ("prompt_sha256", signature)):
+                previous = self._meta(con, key)
+                if previous and previous != value:
+                    raise Conflict("receiver data directory is bound to a different profile/prompt")
+                self._set(con, key, value)
+        return signature
 
     def _connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.path, timeout=5, isolation_level=None)
@@ -262,9 +274,14 @@ class TaskStore:
             self._promote(con, task_id, self.origin, seq)
             return dict(con.execute("SELECT * FROM jobs WHERE id=?", (task_id,)).fetchone())
 
-    def create_request(self, profile: str = "default") -> str:
-        task_id, now = str(uuid.uuid4()), self.clock()
+    def create_request(self, profile: str = "default", task_id: str | None = None) -> str:
+        task_id, now = str(uuid.UUID(task_id)) if task_id else str(uuid.uuid4()), self.clock()
         with self.tx() as con:
+            old = con.execute("SELECT * FROM jobs WHERE id=?",(task_id,)).fetchone()
+            if old:
+                if old["kind"] != "remote" or old["profile"] != profile:
+                    raise Conflict("manual request ID conflict")
+                return task_id
             self._expire(con, now)
             self._capacity(con, 0)
             con.execute("INSERT INTO jobs(id,origin,origin_seq,kind,target,profile,created,expires,digest,state,updated) VALUES (?, 'request',0,'remote','',?,?,?,'','awaiting_capture',?)",
@@ -450,7 +467,7 @@ class TaskStore:
             con.execute("UPDATE jobs SET answer='' WHERE state='complete' AND updated<? AND id NOT IN (?,?)", (self.clock() - retain_seconds, self._meta(con, "current"), self._meta(con, "previous")))
             con.execute("UPDATE jobs SET payload=NULL WHERE state IN ('complete','expired','cancelled','delivered') AND updated<?", (self.clock() - retain_seconds,))
         with contextlib.closing(self._connect()) as con:
-            con.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            con.execute("PRAGMA optimize")
 
     def migrate_pending(self, directory: Path, *, target: str, profile: str) -> dict[str, int]:
         """Explicit P0 import. The operator MUST confirm target/profile first.
@@ -475,6 +492,25 @@ class TaskStore:
             except (OSError, ValueError, KeyError, TypeError, Conflict, QueueFull):
                 report["invalid"] += 1
         return report
+
+
+class FileMutex:
+    """Cross-process lock for local projections; do not use on a network filesystem."""
+    def __init__(self, path: Path):
+        self.path, self.file = Path(path), None
+
+    def __enter__(self):
+        import fcntl
+        private_dir(self.path.parent)
+        self.file = self.path.open("a+")
+        os.chmod(self.path, 0o600)
+        fcntl.flock(self.file, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *args):
+        if self.file is not None:
+            self.file.close()
+            self.file = None
 
 
 class InstanceLock:

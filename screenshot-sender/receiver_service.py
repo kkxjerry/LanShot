@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+from reliability import FileMutex
+from receiver_runtime import ReceiverRuntime
+
 import argparse
 import base64
 import json
@@ -295,7 +298,7 @@ class ReceiverState:
         Old consumers of latest.txt see an explicit current-task header. The canonical
         JSON carries the version; only a real reader ACK can claim DISPLAYED.
         """
-        with self._render_lock:
+        with self._render_lock, FileMutex(self.latest_state.with_suffix(".lock")):
             state = self.analysis()
             if state["version"] == self._last_rendered:
                 return
@@ -504,86 +507,65 @@ class ReceiverServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(self, address: tuple[str, int], state: ReceiverState,
-                 analyzer: AnalysisService | None = None) -> None:
+                 analyzer: AnalysisService | None = None, *, node: str = "receiver",
+                 tls_context: Any = None, allowed_hosts: tuple[str, ...] = ()) -> None:
         self.state, self.analyzer = state, analyzer
-        self.stop_event, self.wake, self.fault = threading.Event(), threading.Event(), threading.Event()
-        self._instance_lock = InstanceLock(state.latest_image.with_name("receiver.lock"))
-        self._instance_lock.__enter__()
+        self.allowed_hosts = set(allowed_hosts)
+        self.tls_context = tls_context
+        self._http_slots = threading.BoundedSemaphore(16)
+        super().__init__(address, ReceiverHandler)
         try:
-            super().__init__(address, ReceiverHandler)
-            self.state.store.recover_model(state.profile)
-            self.state.render()
+            self.runtime = ReceiverRuntime(state, analyzer, node=node, on_fault=self.shutdown)
         except BaseException:
-            self._instance_lock.__exit__(None, None, None)
+            super().server_close()
             raise
-        self.heartbeat = Heartbeat(state.latest_image.with_name("receiver_status.json"), "lanshot-receiver")
-        self.heartbeat.write("starting")
-        self.worker = threading.Thread(target=self._work, name="analysis-worker", daemon=True)
-        self.monitor = threading.Thread(target=self._monitor, name="receiver-monitor", daemon=True)
-        self.worker.start()
-        self.monitor.start()
+        self.stop_event, self.wake, self.fault = self.runtime.stop_event, self.runtime.wake, self.runtime.fault
+        self.heartbeat, self.worker, self.monitor = self.runtime.heartbeat, self.runtime.worker, self.runtime.monitor
 
-    def _work(self) -> None:
-        try:
-            while not self.stop_event.is_set():
-                self.heartbeat.progress("analysis", "checking_queue", deadline=15)
-                if self.analyzer is None or not self.analyzer.run_one(self.heartbeat):
-                    self.heartbeat.progress("analysis", "idle")
-                    self.wake.wait(0.25)
-                    self.wake.clear()
-        except Exception as error:
-            self.fault.set()
-            trace("WORKER_FAILED", component="analysis", **error_info(error))
-
-    def _monitor(self) -> None:
-        cycles = 0
-        while not self.stop_event.wait(1):
+    def get_request(self):
+        connection, address = super().get_request()
+        if self.tls_context is not None:
             try:
-                stalled = self.heartbeat.stalled()
-                if stalled:
-                    self.state.store.model_deadlines(self.state.profile)
-                    self.fault.set()
-                self.state.render()
-                self.heartbeat.write("failed" if self.fault.is_set() else "running",
-                                     model="configured_not_verified" if self.analyzer else "unconfigured",
-                                     stalled=stalled)
-                cycles += 1
-                if cycles % 60 == 0:
-                    self.state.store.maintenance()
-                if self.fault.is_set():
-                    # Never run an unbounded succession of replacement model threads.
-                    self.shutdown()
-                    return
-            except Exception as error:
-                trace("RECEIVER_MONITOR_FAILED", **error_info(error))
-                self.fault.set()
-                self.shutdown()
-                return
+                connection.settimeout(5)
+                connection = self.tls_context.wrap_socket(connection, server_side=True)
+            except BaseException:
+                connection.close()
+                raise
+        return connection, address
+
+    def process_request(self, request, client_address):
+        if not self._http_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request,client_address)
+        except BaseException:
+            self._http_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request,client_address)
+        finally:
+            self._http_slots.release()
+
+    @property
+    def analyzer(self):
+        return self._analyzer
+
+    @analyzer.setter
+    def analyzer(self, value):
+        self._analyzer = value
+        if hasattr(self, "runtime"):
+            self.runtime.analyzer = value
 
     def server_close(self) -> None:
-        self.stop_event.set()
-        self.wake.set()
+        if hasattr(self, "runtime"):
+            self.runtime.close()
         super().server_close()
-        self.worker.join(timeout=1)
-        self.monitor.join(timeout=1)
-        self.heartbeat.write("failed" if self.fault.is_set() else "stopped")
-        self._instance_lock.__exit__(None, None, None)
 
-    def accept_image(self, capture_id: str, image: bytes, *, origin: str, sequence: int,
-                     profile: str, remote: bool, created: float | None = None) -> tuple[dict[str, Any], bool]:
-        if profile != self.state.profile:
-            raise Conflict("receiver profile mismatch")
-        row, new = self.state.store.accept(capture_id, image, origin=origin, origin_seq=sequence,
-                                          profile=profile, prompt=self.analyzer.prompt if self.analyzer else self.state.default_prompt,
-                                          configured=self.analyzer is not None, remote=remote, created=created)
-        trace("UPLOAD_PERSISTED" if new else "UPLOAD_DUPLICATE", capture_id, state=row["state"])
-        # A render failure does NOT revoke a durable ACK or cause a duplicate model request.
-        try:
-            self.state.render()
-        except Exception as error:
-            trace("RESULT_RENDER_FAILED", capture_id, **error_info(error))
-        self.wake.set()
-        return row, new
+    def accept_image(self, *args, **kwargs) -> tuple[dict, bool]:
+        return self.runtime.accept_image(*args, **kwargs)
 
 
 class ReceiverHandler(BaseHTTPRequestHandler):
@@ -597,14 +579,14 @@ class ReceiverHandler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         # Protect a loopback service from browser cross-origin requests / DNS rebinding.
         host = urllib.parse.urlsplit("http://" + self.headers.get("Host", "")).hostname
-        allowed = {"127.0.0.1", "localhost", "::1", str(self.server.server_address[0])}
+        allowed = {"127.0.0.1", "localhost", "::1", str(self.server.server_address[0])} | self.server.allowed_hosts
         if host not in allowed:
             self._json(HTTPStatus.FORBIDDEN, {"error": "host_not_allowed"})
             return False
         origin = self.headers.get("Origin")
         if origin:
             parsed = urllib.parse.urlsplit(origin)
-            if parsed.scheme != "http" or parsed.netloc != self.headers.get("Host"):
+            if parsed.scheme not in ("http", "https") or parsed.netloc != self.headers.get("Host"):
                 self._json(HTTPStatus.FORBIDDEN, {"error": "cross_origin_not_allowed"})
                 return False
         token = os.environ.get("LANSHOT_LOCAL_TOKEN", "")
@@ -618,6 +600,8 @@ class ReceiverHandler(BaseHTTPRequestHandler):
             return
         try:
             self._get()
+        except (ValueError, TypeError):
+            self._json(HTTPStatus.BAD_REQUEST, {"error":"invalid_request"})
         except (OSError, sqlite3.Error) as error:
             trace("HTTP_STORAGE_FAILED", **error_info(error))
             self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "storage_unavailable"})
@@ -629,13 +613,17 @@ class ReceiverHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/latest.jpg":
             self._send_latest()
         elif parsed.path == "/api/health":
-            storage = self.server.state.storage_ready()
-            self._json(HTTPStatus.OK, {"service": "lanshot-receiver", "build": BUILD, "protocol": PROTOCOL,
-                "profile": self.server.state.profile, "instance": self.server.heartbeat.instance,
-                "status": "ready" if storage and not self.server.fault.is_set() else "degraded",
-                "storage": "ready" if storage else "failed",
-                "worker": "failed" if self.server.fault.is_set() else "running",
-                "analyzer": "configured_not_verified" if self.server.analyzer else "unconfigured"})
+            self._json(HTTPStatus.OK, self.server.runtime.health())
+        elif parsed.path.startswith("/api/v1/captures/"):
+            task_id = str(uuid.UUID(parsed.path.rsplit("/", 1)[-1]))
+            row = self.server.state.store.get(task_id)
+            if row is None:
+                self._json(HTTPStatus.NOT_FOUND, {"error": "not_found", "cluster_id": self.server.runtime.cluster_id})
+            else:
+                fields = ("id", "origin", "origin_seq", "profile", "created", "updated", "expires", "digest", "state", "answer", "code")
+                self._json(HTTPStatus.OK, {"service": "lanshot-receiver", "protocol": PROTOCOL,
+                    "cluster_id": self.server.runtime.cluster_id, "durable": True,
+                    "task": {k: row[k] for k in fields}})
         elif parsed.path == "/api/status":
             self._json(HTTPStatus.OK, {"service": "lanshot-receiver", "build": BUILD,
                                       **self.server.state.store.snapshot(include_answers=False)})
@@ -701,7 +689,7 @@ class ReceiverHandler(BaseHTTPRequestHandler):
                                                 profile=profile, remote=task_id is not None, created=created)
             self._json(HTTPStatus.CREATED if new else HTTPStatus.OK,
                        {"service": "lanshot-receiver", "protocol": PROTOCOL, "capture_id": capture_id,
-                        "sha256": row["digest"], "durable": True,
+                        "sha256": row["digest"], "durable": True, "cluster_id": self.server.runtime.cluster_id,
                         "status": "accepted" if new else "duplicate", "state": row["state"]})
             return
         if path in ("/api/retry", "/api/cancel", "/api/displayed"):
@@ -858,13 +846,18 @@ def create_server(
     port: int,
     state: ReceiverState,
     analyzer: AnalysisService | None = None,
+    *, node: str = "receiver", tls_context: Any = None, allowed_hosts: tuple[str, ...] = (),
 ) -> ReceiverServer:
-    return ReceiverServer((host, port), state, analyzer)
+    return ReceiverServer((host, port), state, analyzer, node=node, tls_context=tls_context, allowed_hosts=allowed_hosts)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="LanShot receiver service")
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--node", default="receiver")
+    parser.add_argument("--tls-cert", type=Path)
+    parser.add_argument("--tls-key", type=Path)
+    parser.add_argument("--public-host", action="append", default=[])
     parser.add_argument("--profile", default="default")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--image", type=Path, default=DEFAULT_IMAGE_PATH)
@@ -881,6 +874,16 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if arguments.host not in ("127.0.0.1", "localhost", "::1") and not os.environ.get("LANSHOT_LOCAL_TOKEN"):
         raise ValueError("non-loopback binding requires LANSHOT_LOCAL_TOKEN")
+    context = None
+    if bool(arguments.tls_cert) != bool(arguments.tls_key):
+        raise ValueError("both TLS certificate and key are required")
+    if arguments.tls_cert:
+        import ssl
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(arguments.tls_cert, arguments.tls_key)
+    if arguments.host not in ("127.0.0.1", "localhost", "::1") and context is None:
+        raise ValueError("non-loopback binding requires TLS; use loopback behind a TLS reverse proxy")
     state = ReceiverState(arguments.image, arguments.answer_file, arguments.history_dir, profile=arguments.profile)
     state.default_prompt = arguments.prompt
     api_key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
@@ -896,7 +899,7 @@ def main(argv: list[str] | None = None) -> int:
         if api_key
         else None
     )
-    server = create_server(arguments.host, arguments.port, state, analyzer)
+    server = create_server(arguments.host, arguments.port, state, analyzer, node=arguments.node, tls_context=context, allowed_hosts=tuple(arguments.public_host))
     LOGGER.info(
         "receiver listening on http://%s:%d; history=%s",
         arguments.host,

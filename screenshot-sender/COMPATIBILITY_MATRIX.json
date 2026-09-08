@@ -1,7 +1,7 @@
 {
-  "warning": "All real environments below are NOT_RUN. Synthetic tests are not proof of compatibility.",
+  "warning": "Native source restored and adapted; all actual macOS/Nowcoder environments remain NOT_RUN. Linux protocol tests are not native UI acceptance.",
   "allowed_scope": "仅在允许使用辅助工具的练习或授权测试场景",
-  "build": "lanshot-p1-20260907.1",
+  "build": "lanshot-p1r2-20260908.1",
   "cases": [
     {
       "id": "web_normal",

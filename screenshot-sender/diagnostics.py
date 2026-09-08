@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Visible local diagnostics and manual capture. No stealth window or browser automation."""
+"""Command-line diagnostics and manual capture; the native app is the normal display."""
 from __future__ import annotations
 
 import argparse
 import json
 import os
 import platform
-import queue
 import sys
 import tempfile
-import threading
 import time
 import urllib.error
 import urllib.request
@@ -23,7 +21,7 @@ from manage_services import DEFAULT_SETTINGS, read_settings
 from sender_service import Config, Screenshotter, NativeRedactor
 
 SAFE_EVENT_FIELDS = {"event", "at", "task_id", "build", "stage", "component", "code",
-                     "error_type", "errno", "http_status", "attempt", "delay", "elapsed_ms", "version"}
+                     "error_type", "errno", "http_status", "attempt", "delay", "elapsed_ms", "version", "backend", "node", "cluster_id"}
 SAFE_JOB_FIELDS = {"id", "state", "created", "updated", "attempts", "code", "profile", "displayed_version"}
 
 
@@ -66,6 +64,20 @@ class Diagnostics:
     def status(self) -> dict[str, Any]:
         result: dict[str, Any] = {"build": BUILD, "profile": self.config.profile,
                                   "sender": self._read_status(self.config.spool_dir / "sender_status.json")}
+        if self.config.routes_file:
+            from multi_receiver import build_client
+            try:
+                router = build_client(self.config,start_embedded=False)
+                result["receiver"] = router.local_state.store.snapshot(include_answers=False) if router.local_state else {"status":"unavailable"}
+                result["routes"] = router.book.summary()
+                result["receiver_nodes"] = {name:self._read_status(Path(self.data["receiver_dir"])/f"{name}_status.json")
+                                            for name in ("embedded","receiver","receiver_backup")}
+                result["display"] = self._read_status(Path(self.data["display_dir"])/"display_status.json")
+                result["overlay"] = self._read_status(Path(self.data["display_dir"])/"overlay_status.json")
+                router.close()
+            except Exception as error:
+                result["receiver"] = {"status":"unavailable",**error_info(error)}
+            return result
         try:
             result["receiver"] = self.request("/api/status")
             result["receiver_health"] = self.request("/api/health")
@@ -73,17 +85,16 @@ class Diagnostics:
             result["receiver"] = {"status": "unavailable", **error_info(error)}
         return result
 
-    def view(self) -> dict[str, Any]:
-        sender = self._read_status(self.config.spool_dir / "sender_status.json")
-        try:
-            result = self.request("/api/analysis")
-        except Exception:
-            result = {"status": "unavailable", "stage": "receiver_unavailable", "current": None,
-                      "previous": None, "version": 0, "profile": self.config.profile}
-        result["sender"] = sender
-        return result
-
     def capture(self) -> str:
+        if self.config.routes_file:
+            from multi_receiver import build_client
+            router = build_client(self.config,start_embedded=False)
+            try:
+                if router.local_state is None:
+                    raise ValueError("local manual-request store unavailable")
+                return router.local_state.create_task()
+            finally:
+                router.close()
         return str(self.request("/api/capture", {})["id"])
 
     def local_capture_test(self) -> dict[str, str]:
@@ -108,9 +119,17 @@ class Diagnostics:
         for key in ("current", "previous"):
             row = receiver.get(key)
             safe["receiver"][key] = {k: v for k, v in row.items() if k in SAFE_JOB_FIELDS} if isinstance(row, dict) else None
+        safe["routes"] = [{k: v for k, v in row.items() if k in ("id", "backend", "cluster_id", "state", "updated")}
+                          for row in status.get("routes", [])[:100] if isinstance(row, dict)]
+        for key in ("display", "overlay"):
+            value = status.get(key, {})
+            safe[key] = {k: value.get(k) for k in ("status", "age_seconds", "heartbeat_fresh")}
+        safe["receiver_nodes"] = {name: {k: value.get(k) for k in ("status", "age_seconds", "heartbeat_fresh")}
+            for name, value in status.get("receiver_nodes", {}).items()
+            if name in ("embedded", "receiver", "receiver_backup") and isinstance(value, dict)}
         events = []
         root = Path(self.data["state_dir"])
-        for role in ("sender", "receiver"):
+        for role in ("sender", "receiver", "receiver_backup", "display"):
             path = root / f"{role}.log"
             if not path.is_file():
                 continue
@@ -139,126 +158,22 @@ class Diagnostics:
                          max_items=self.config.queue_max_items, max_bytes=self.config.queue_max_bytes)
 
 
-def gui(diag: Diagnostics) -> None:
-    try:
-        import tkinter as tk
-        from tkinter import messagebox, filedialog
-    except ImportError as error:
-        raise RuntimeError("Tk is unavailable in this Python. CLI status/export/capture remain usable.") from error
-    root = tk.Tk()
-    root.title("LanShot P1 · 本地状态与手动操作")
-    root.geometry("780x620")
-    status = tk.StringVar(value="连接本地服务…")
-    tk.Label(root, textvariable=status, anchor="w", justify="left", wraplength=750).pack(fill="x", padx=12, pady=10)
-    buttons = tk.Frame(root)
-    buttons.pack(fill="x", padx=12)
-    body = tk.Text(root, wrap="word", font=("TkDefaultFont", 13))
-    body.pack(fill="both", expand=True, padx=12, pady=12)
-    results: queue.Queue[tuple[str, Any]] = queue.Queue()
-    current: dict[str, Any] = {}
-    busy = {"poll": False}
-    def work(name, function):
-        def run():
-            try:
-                results.put((name, function()))
-            except Exception as error:
-                results.put(("error:" + name, error_info(error)))
-        threading.Thread(target=run, daemon=True).start()
-    def capture():
-        status.set("请求截图：此操作会按配置上传到接收端并调用模型。")
-        work("capture", diag.capture)
-    def retry():
-        row = current.get("current") or {}
-        if not row:
-            return
-        uncertain = row.get("state") == "uncertain"
-        if uncertain and not messagebox.askyesno("处理结果未知", f"任务 {row['id']} 可能已经调用过模型。再次处理可能重复计费，仍要重试吗？"):
-            return
-        work("retry", lambda: diag.request("/api/retry", {"id": row["id"], "confirm_uncertain": uncertain}))
-    def cancel():
-        row = current.get("current") or {}
-        if row:
-            work("cancel", lambda: diag.request("/api/cancel", {"id": row["id"]}))
-    def export():
-        name = filedialog.asksaveasfilename(defaultextension=".zip", initialfile="lanshot-diagnostics.zip")
-        if name:
-            work("export", lambda: str(diag.export(Path(name))))
-    tk.Button(buttons, text="手动截图并分析", command=capture).pack(side="left", padx=4)
-    tk.Button(buttons, text="本地截图自检（不上传）", command=lambda: work("capture-test", diag.local_capture_test)).pack(side="left", padx=4)
-    tk.Button(buttons, text="重试当前任务", command=retry).pack(side="left", padx=4)
-    tk.Button(buttons, text="取消等待任务", command=cancel).pack(side="left", padx=4)
-    tk.Button(buttons, text="导出诊断", command=export).pack(side="left", padx=4)
-    rendered: tuple[str, int] | None = None
-    def tick():
-        nonlocal rendered
-        while True:
-            try:
-                name, value = results.get_nowait()
-            except queue.Empty:
-                break
-            if name in ("view", "error:view"):
-                busy["poll"] = False
-            if name.startswith("error:"):
-                status.set(f"{name[6:]} 操作失败：{value.get('error_type')}。未确认当前服务状态；下方可能是历史缓存。")
-                continue
-            if name != "view":
-                status.set(f"{name}：{value}")
-                continue
-            current.clear()
-            current.update(value)
-            row, previous = value.get("current"), value.get("previous")
-            text = "当前模式尚无任务。"
-            if row:
-                text = f"当前任务：{row['id']}\n阶段：{row['state']}\n错误码：{row.get('code') or '无'}\n\n"
-                if row["state"] == "complete":
-                    text += row["answer"]
-                elif previous and previous["id"] != row["id"] and previous["profile"] == value.get("profile"):
-                    text += f"上一任务结果（不是本次答案）：{previous['id']}\n{previous['answer']}"
-            sender_state = value.get("sender", {})
-            sender_queue = sender_state.get("queue", {}).get("counts", {})
-            status.set(f"模式 {value.get('profile')} · 阶段 {value.get('stage')} · 版本 {value.get('version')}\n"
-                       f"发送端：{sender_state.get('status')} · 上传队列：{sender_queue} · 最近截图：{sender_state.get('last_capture', {})}")
-            body.delete("1.0", "end")
-            body.insert("1.0", text)
-            if row and row["state"] == "complete":
-                version = int(value["version"])
-                if rendered != (row["id"], version):
-                    rendered = (row["id"], version)
-                    root.after_idle(lambda task_id=row["id"], v=version: work("displayed", lambda: diag.request("/api/displayed", {"id": task_id, "version": v})))
-        if not busy["poll"]:
-            busy["poll"] = True
-            work("view", diag.view)
-        root.after(1000, tick)
-    root.after(0, tick)
-    try:
-        root.mainloop()
-    finally:
-        # Tcl timers survive destruction of a toplevel. Cancel them explicitly and
-        # release Tk-owned objects on the GUI thread, not a later worker-thread GC.
-        try:
-            for after_id in root.tk.splitlist(root.tk.call("after", "info")):
-                root.tk.call("after", "cancel", after_id)
-        except tk.TclError:
-            pass
-        status = None
-        body = None
-        buttons = None
-        root = None
-        import gc
-        gc.collect()
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("status", "gui", "capture", "capture-test", "queue"):
+    for name in ("status", "capture", "capture-test", "queue", "routes"):
         sub.add_parser(name)
     export = sub.add_parser("export")
     export.add_argument("--output", type=Path, required=True)
     for name in ("retry-upload", "cancel-upload"):
         command = sub.add_parser(name)
         command.add_argument("--id", required=True)
+        command.add_argument("--confirm-uncertain",action="store_true")
+    for name in ("retry-analysis","cancel-analysis"):
+        command = sub.add_parser(name)
+        command.add_argument("--id",required=True)
+        command.add_argument("--confirm-uncertain",action="store_true")
     migration = sub.add_parser("migrate-p0-sender")
     migration.add_argument("--spool", type=Path, required=True)
     migration.add_argument("--confirm-target", required=True)
@@ -270,9 +185,13 @@ def main(argv: list[str] | None = None) -> int:
             if token:
                 os.environ["LANSHOT_LOCAL_TOKEN"] = token
         diag = Diagnostics(args.settings)
-        if args.command == "gui":
-            gui(diag)
-            return 0
+        if diag.config.routes_file and sys.platform == "darwin":
+            from multi_receiver import load_routes
+            for endpoint in load_routes(diag.config.routes_file,diag.config.profile)["parsed_endpoints"]:
+                if endpoint.kind == "remote":
+                    value = keychain(endpoint.token_env,service="com.lanshot.p1")
+                    if value:
+                        os.environ[endpoint.token_env]=value
         if args.command == "status":
             result = diag.status()
         elif args.command == "capture":
@@ -281,14 +200,39 @@ def main(argv: list[str] | None = None) -> int:
             result = diag.local_capture_test()
         elif args.command == "export":
             result = {"archive": str(diag.export(args.output))}
+        elif args.command == "routes":
+            from multi_receiver import RouteBook
+            if diag.config.routes_file:
+                from multi_receiver import build_client
+                router = build_client(diag.config,start_embedded=False)
+                try:
+                    result = {"queue_target":router.queue_target,"tasks":router.book.summary()}
+                finally:
+                    router.close()
+            else:
+                result = RouteBook(diag.sender_store()).summary()
         elif args.command == "queue":
             result = diag.sender_store().snapshot(include_answers=False)
         elif args.command in ("retry-upload", "cancel-upload"):
             store = diag.sender_store()
             task_id = str(uuid.UUID(args.id))
-            store.retry(task_id) if args.command == "retry-upload" else store.cancel(task_id)
+            store.retry(task_id,confirm_uncertain=args.confirm_uncertain) if args.command == "retry-upload" else store.cancel(task_id)
             result = {"status": "updated", "task_id": task_id}
+        elif args.command in ("retry-analysis","cancel-analysis"):
+            if not diag.config.routes_file:
+                result = diag.request("/api/retry" if args.command == "retry-analysis" else "/api/cancel",
+                    {"id":args.id,"confirm_uncertain":args.confirm_uncertain})
+            else:
+                from multi_receiver import build_client
+                router = build_client(diag.config,start_embedded=False)
+                try:
+                    result = router.control_task(args.id,"retry" if args.command == "retry-analysis" else "cancel",
+                                                 confirm_uncertain=args.confirm_uncertain)
+                finally:
+                    router.close()
         else:
+            if diag.config.routes_file:
+                raise ValueError("P0 migration requires an explicit single-target migration configuration; never import old ambiguous work into multi-route failover")
             if args.confirm_target != diag.config.server_url:
                 raise ValueError("confirmed target does not match this sender configuration")
             result = diag.sender_store().migrate_pending(args.spool, target=diag.config.server_url, profile=diag.config.profile)

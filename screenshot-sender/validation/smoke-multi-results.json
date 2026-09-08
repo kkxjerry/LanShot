@@ -1,0 +1,30 @@
+{
+  "build": "lanshot-p1r2-20260908.1",
+  "status": "passed",
+  "cases": [
+    {
+      "selected": "embedded",
+      "durable_upload": true,
+      "result_projection": "matched"
+    },
+    {
+      "selected": "local-primary",
+      "durable_upload": true,
+      "result_projection": "matched"
+    },
+    {
+      "selected": "local-backup",
+      "durable_upload": true,
+      "result_projection": "matched"
+    }
+  ],
+  "tasks": 3,
+  "stub_model_calls": 3,
+  "duplicate_model_calls": 0,
+  "real_model_calls": 0,
+  "desktop_capture": false,
+  "user_state_modified": false,
+  "transport": "direct_function_and_real_loopback_HTTP",
+  "native_app_rendered": false,
+  "remote_host_deployed": false
+}

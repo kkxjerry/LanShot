@@ -1,0 +1,4 @@
+Python compileall: passed
+sh -n command scripts: passed
+Native build script sh -n: passed
+Swift frontend parse: passed (Linux; NOT AppKit compilation/linking)

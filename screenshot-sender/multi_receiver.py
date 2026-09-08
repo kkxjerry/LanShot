@@ -435,7 +435,9 @@ def build_client(config, *, start_embedded: bool = True, store: TaskStore | None
     store = store or TaskStore(config.spool_dir / "sender_tasks.sqlite3", max_items=config.queue_max_items,
                               max_bytes=config.queue_max_bytes,ttl=config.queue_ttl_seconds)
     root = Path(spec["receiver_dir"])
-    prompt = Path(spec["prompt_file"]).read_text()
+    prompt = Path(spec["prompt_file"]).read_text().strip()
+    if not prompt:
+        raise ValueError("prompt file is empty")
     signature = hashlib.sha256(prompt.encode()).hexdigest()
     state = None
     try:

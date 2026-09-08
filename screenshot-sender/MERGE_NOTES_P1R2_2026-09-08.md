@@ -25,4 +25,7 @@
 - Merged Python compile, command-script syntax, AppKit compile/link/sign, and package checksums passed.
 - A temporary redundant-mode configuration produced the expected four-role dry run: primary receiver,
   backup receiver, sender, and display bridge.
+- The first real startup exposed a trailing-newline prompt signature mismatch: embedded mode ran, but
+  both HTTP receivers correctly refused the shared store. Prompt canonicalization and redundant-node
+  readiness checks were added, with regression coverage. The local suite now runs 199 passing tests.
 - Real screenshots, model calls, Input Monitoring, Screen Recording, launchd failover, and target-site behavior were not exercised during merge.

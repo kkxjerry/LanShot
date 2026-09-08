@@ -2,6 +2,7 @@ import contextlib
 import hashlib
 import json
 import os
+import plistlib
 import socket
 import ssl
 import subprocess
@@ -327,7 +328,9 @@ class SettingsAndCleanupTests(unittest.TestCase):
         data=self.configure();data['enabled']=True;self.settings.write_text(json.dumps(data))
         with self.assertRaises(Conflict):manager.add_remote(self.settings,url='https://remote.example',token_env='REMOTE_TOKEN',allow_remote_images=True)
     def test_old_overlay_binary_rejected(self):
-        data=self.configure()
+        data=self.configure();app=self.root/'old-overlay.app';(app/'Contents').mkdir(parents=True)
+        (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'com.lanshot.old'}))
+        data['overlay_app']=str(app)
         with self.assertRaises(Exception):manager.validate_overlay(data)
     def test_tk_removed_native_display_retained(self):
         root=Path(__file__).resolve().parents[1];source=(root/'diagnostics.py').read_text();self.assertNotIn('tkinter',source);self.assertNotIn('def gui(',source)
@@ -435,3 +438,10 @@ class ConfigurationConsistencyTests(unittest.TestCase):
         self.assertIsNone(router.local_state)
         self.assertEqual(router.backends[-1].endpoint.kind,'remote')
         self.assertIsNotNone(router.store)
+    def test_prompt_trailing_newline_has_one_receiver_signature(self):
+        settings=self.root/'newline-settings.json';prompt=self.root/'newline-prompt.txt';prompt.write_text(PROMPT+'\n')
+        manager.configure(settings,state_dir=self.root/'newline-state',port=8890,profile='default',prompt=prompt)
+        data=manager.read_settings(settings);store=TaskStore(Path(data['receiver_dir'])/'receiver_tasks.sqlite3')
+        self.assertEqual(store.bind_receiver('default',PROMPT),SIG)
+        router=build_client(Config.load(Path(data['sender_config'])),start_embedded=False);self.addCleanup(router.close)
+        self.assertEqual(router.prompt_sha256,SIG)

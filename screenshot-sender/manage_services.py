@@ -30,6 +30,13 @@ LABELS = {role: f"com.lanshot.p1.{role}" for role in ROLES}
 ROOT = Path(__file__).resolve().parent
 
 
+def read_prompt(path: Path) -> str:
+    prompt = path.read_text().strip()
+    if not prompt:
+        raise ConfigError("prompt file is empty")
+    return prompt
+
+
 def read_settings(path: Path) -> dict[str, Any]:
     data = json.loads(path.expanduser().read_text())
     required = {"state_dir", "sender_config", "receiver_dir", "port", "profile", "prompt_file", "enabled"}
@@ -81,7 +88,7 @@ def configure(path: Path, *, state_dir: Path, port: int, profile: str, prompt: P
         raise ConfigError("backup port must be a distinct valid port")
     receiver_dir = state_dir / "receiver"
     store = TaskStore(receiver_dir / "receiver_tasks.sqlite3")
-    store.bind_receiver(profile,prompt.read_text())
+    store.bind_receiver(profile,read_prompt(prompt))
     display_dir = state_dir / "display"
     routes_file = state_dir / "routes.json"
     endpoints = [{"name":"embedded","kind":"embedded","expected_cluster":store.origin}]
@@ -232,7 +239,7 @@ def run_child(role: str, settings: Path) -> int:
             if role in ("receiver", "receiver_backup"):
                 import receiver_service
                 receiver_dir = Path(data["receiver_dir"])
-                os.environ["LANSHOT_PROMPT"] = Path(data["prompt_file"]).read_text()
+                os.environ["LANSHOT_PROMPT"] = read_prompt(Path(data["prompt_file"]))
                 port = data["backup_port"] if role == "receiver_backup" else data["port"]
                 code = receiver_service.main(["--host", "127.0.0.1", "--port", str(port), "--node", role,
                     "--profile", data["profile"], "--image", str(receiver_dir / "latest.jpg"),
@@ -273,6 +280,41 @@ def health(data: dict[str, Any]) -> dict[str, Any]:
     if result.get("instance") != heartbeat.get("instance"):
         raise Conflict("port belongs to another P1 state directory")
     return result
+
+
+def current_readiness(data: dict[str, Any]) -> dict[str, Any] | None:
+    config = Config.load(Path(data["sender_config"]))
+    try:
+        sender = json.loads((config.spool_dir / "sender_status.json").read_text())
+        display = json.loads((Path(data["display_dir"]) / "display_status.json").read_text())
+    except (OSError, ValueError, TypeError):
+        return None
+    now = time.time()
+    if not (
+        sender.get("build") == BUILD
+        and display.get("build") == BUILD
+        and sender.get("status") in ("running", "degraded")
+        and display.get("status") == "running"
+        and -2 <= now - sender["at"] < 5
+        and -2 <= now - display["at"] < 5
+    ):
+        return None
+    if data.get("mode") == "redundant":
+        for role in ("receiver", "receiver_backup"):
+            try:
+                node = json.loads((Path(data["receiver_dir"]) / f"{role}_status.json").read_text())
+            except (OSError, ValueError, TypeError):
+                return None
+            if not (
+                node.get("build") == BUILD
+                and node.get("status") == "running"
+                and -2 <= now - node["at"] < 5
+            ):
+                return None
+    ready = sender["status"] == "running"
+    return {"status": "ready" if ready else "degraded", "input_error": sender.get("input_error"),
+            "receiver": sender.get("receiver"), "display_bridge": display["status"],
+            "model": "configured_not_verified", "real_capture": "not_tested", "mode": data.get("mode")}
 
 
 def control(action: str, settings: Path, *, dry_run: bool = False, reset_budget: bool = False,
@@ -328,16 +370,9 @@ def control(action: str, settings: Path, *, dry_run: bool = False, reset_budget:
             deadline = time.monotonic() + 12
             while time.monotonic() < deadline:
                 try:
-                    config = Config.load(Path(data["sender_config"]))
-                    sender = json.loads((config.spool_dir/"sender_status.json").read_text())
-                    display = json.loads((Path(data["display_dir"])/"display_status.json").read_text())
-                    if (sender.get("build") == BUILD and display.get("build") == BUILD
-                        and sender.get("status") in ("running","degraded")
-                        and -2 <= time.time()-sender["at"] < 5 and -2 <= time.time()-display["at"] < 5):
-                        ready = sender["status"] == "running" and display["status"] == "running"
-                        return {"status":"ready" if ready else "degraded", "input_error":sender.get("input_error"),
-                                "receiver":sender.get("receiver"),"display_bridge":display["status"],
-                                "model":"configured_not_verified", "real_capture":"not_tested", "mode":data.get("mode")}
+                    status = current_readiness(data)
+                    if status is not None:
+                        return status
                 except (OSError, ValueError, KeyError, Conflict):
                     pass
                 time.sleep(0.25)

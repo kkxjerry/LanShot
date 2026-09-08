@@ -2,6 +2,7 @@ import json
 import os
 import plistlib
 import tempfile
+import time
 import unittest
 import zipfile
 import sys
@@ -41,6 +42,17 @@ class ManagerTests(unittest.TestCase):
         result=manager.control('start',self.settings,dry_run=True,runner=runner)
         self.assertEqual(result['side_effects'],'none'); runner.assert_not_called()
         self.assertEqual(before,{p:p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+    def test_redundant_readiness_requires_both_receiver_nodes(self):
+        data=manager.read_settings(self.settings);config=manager.Config.load(Path(data['sender_config']))
+        now=time.time();config.spool_dir.mkdir(parents=True,exist_ok=True);Path(data['display_dir']).mkdir(parents=True,exist_ok=True)
+        atomic_json(config.spool_dir/'sender_status.json',{'build':BUILD,'status':'running','at':now,'receiver':'ready','input_error':None})
+        atomic_json(Path(data['display_dir'])/'display_status.json',{'build':BUILD,'status':'running','at':now})
+        self.assertIsNone(manager.current_readiness(data))
+        receiver_dir=Path(data['receiver_dir'])
+        atomic_json(receiver_dir/'receiver_status.json',{'build':BUILD,'status':'running','at':now})
+        self.assertIsNone(manager.current_readiness(data))
+        atomic_json(receiver_dir/'receiver_backup_status.json',{'build':BUILD,'status':'running','at':now})
+        self.assertEqual(manager.current_readiness(data)['status'],'ready')
     def test_stop_only_own_launchd_labels_and_persists_disabled(self):
         data=manager.read_settings(self.settings); data['enabled']=True; atomic_json(self.settings,data)
         runner=mock.Mock()

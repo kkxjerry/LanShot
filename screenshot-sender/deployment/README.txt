@@ -35,6 +35,8 @@ python3 manage_services.py stop
 python3 manage_services.py add-remote --url https://receiver.example.com:9443 --name remote --token-env LANSHOT_REMOTE_TOKEN --allow-remote-images
 
 建议从经过认证的 /api/health 获取远程 cluster_id，并通过 --expected-cluster <UUID> 固定身份。
+使用私有 CA 或直接连接带 IP SAN 的证书时，通过 `--ca-file /绝对路径/ca.crt` 为该端点固定信任根；
+不要关闭 TLS 校验，也不要把 CA 私钥复制到客户端。
 添加路由只改配置，不上传图片，也不代表服务已经部署。远程默认关闭；命令中的 --allow-remote-images 是显式授权这个目的地接收截图。
 
 重新检查配置和队列，再启动：

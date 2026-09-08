@@ -57,6 +57,7 @@ class Endpoint:
     url: str = ""
     token_env: str = "LANSHOT_LOCAL_TOKEN"
     expected_cluster: str = ""
+    ca_file: str = ""
 
     def __post_init__(self):
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,48}", self.name):
@@ -67,6 +68,10 @@ class Endpoint:
             raise ValueError("token_env must be an environment variable name, never a token value")
         if self.expected_cluster:
             uuid.UUID(self.expected_cluster)
+        if self.ca_file:
+            ca = Path(self.ca_file)
+            if self.kind != "remote" or not ca.is_absolute() or not ca.is_file():
+                raise ValueError("remote ca_file must be an existing absolute path")
         if self.kind == "embedded":
             if self.url:
                 raise ValueError("embedded endpoint must not specify URL")
@@ -140,7 +145,13 @@ class RouteBook:
 class HTTPBackend:
     def __init__(self, endpoint: Endpoint, *, timeout: float = 10, opener=None):
         self.endpoint, self.timeout = endpoint, timeout
-        self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        if opener is None:
+            handlers = [urllib.request.ProxyHandler({}), NoRedirect()]
+            if endpoint.ca_file:
+                context = ssl.create_default_context(cafile=endpoint.ca_file)
+                handlers.append(urllib.request.HTTPSHandler(context=context))
+            opener = urllib.request.build_opener(*handlers)
+        self.opener = opener
 
     def request(self, path: str, *, data: bytes | None = None, headers: dict | None = None,
                 timeout: float | None = None) -> tuple[int, dict]:

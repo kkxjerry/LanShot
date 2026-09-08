@@ -245,9 +245,9 @@ class RealReplicaTests(unittest.TestCase):
                         '-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost,IP:127.0.0.1'],check=True,capture_output=True)
         context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(cert,key)
         client=mock.Mock();client.analyze.return_value='remote result';s=self.server(self.state(self.root/'remote'),client,'remote',context)
-        endpoint=Endpoint('remote','remote',f'https://127.0.0.1:{s.server_port}',token_env='TEST_REMOTE_TOKEN',expected_cluster=s.runtime.cluster_id)
-        opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect(),urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=str(cert))))
-        remote=HTTPBackend(endpoint,opener=opener)
+        endpoint=Endpoint('remote','remote',f'https://127.0.0.1:{s.server_port}',token_env='TEST_REMOTE_TOKEN',
+                          expected_cluster=s.runtime.cluster_id,ca_file=str(cert))
+        remote=HTTPBackend(endpoint)
         local=StubBackend('local');local.available=False
         router=MultiReceiverClient(self.store,[local,remote],profile='default',prompt_sha256=SIG,allow_remote=True)
         task=str(uuid.uuid4());self.store.enqueue(task,IMAGE,target=router.queue_target);job=self.store.claim(target=router.queue_target)
@@ -324,6 +324,9 @@ class SettingsAndCleanupTests(unittest.TestCase):
         with mock.patch.dict(os.environ,{'REMOTE_TOKEN':'DO-NOT-WRITE-SECRET'}):
             manager.add_remote(self.settings,url='https://remote.example',token_env='REMOTE_TOKEN',allow_remote_images=True)
         text=Path(data['routes_file']).read_text();self.assertIn('REMOTE_TOKEN',text);self.assertNotIn('DO-NOT-WRITE-SECRET',text)
+    def test_remote_ca_file_must_be_absolute_and_exist(self):
+        with self.assertRaises(ValueError):Endpoint('remote','remote','https://remote.example',token_env='REMOTE_TOKEN',ca_file='relative.crt')
+        with self.assertRaises(ValueError):Endpoint('remote','remote','https://remote.example',token_env='REMOTE_TOKEN',ca_file=str(self.root/'missing.crt'))
     def test_add_remote_refuses_running_configuration(self):
         data=self.configure();data['enabled']=True;self.settings.write_text(json.dumps(data))
         with self.assertRaises(Conflict):manager.add_remote(self.settings,url='https://remote.example',token_env='REMOTE_TOKEN',allow_remote_images=True)

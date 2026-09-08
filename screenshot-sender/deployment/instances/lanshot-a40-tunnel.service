@@ -1,0 +1,20 @@
+[Unit]
+Description=LanShot A40 reverse tunnel to the private jump host
+After=network-online.target lanshot-remote-a40.service
+Wants=network-online.target lanshot-remote-a40.service
+
+[Service]
+Type=simple
+User=lanshot
+Group=lanshot
+ExecStart=/usr/bin/ssh -NT -i /etc/lanshot/tunnel_ed25519 -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/lanshot/known_hosts -R 10.147.20.54:19443:127.0.0.1:9443 lanshot-tunnel@10.147.20.54
+Restart=always
+RestartSec=10
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

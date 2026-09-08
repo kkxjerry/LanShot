@@ -1,0 +1,26 @@
+[Unit]
+Description=LanShot remote receiver on A40
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=lanshot
+Group=lanshot
+WorkingDirectory=/opt/lanshot/screenshot-sender
+EnvironmentFile=/etc/lanshot/receiver.env
+ExecStart=/usr/bin/python3 /opt/lanshot/screenshot-sender/deployment/remote_receiver.py --host 127.0.0.1 --public-host 10.147.20.54 --port 9443 --profile default --prompt-file /etc/lanshot/prompt.txt --state-dir /var/lib/lanshot --tls-cert /etc/lanshot/tls/inner.crt --tls-key /etc/lanshot/tls/inner.key
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lanshot
+
+[Install]
+WantedBy=multi-user.target

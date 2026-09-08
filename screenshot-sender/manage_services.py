@@ -116,7 +116,7 @@ def active_roles(data: dict) -> tuple[str, ...]:
 
 
 def add_remote(settings: Path, *, url: str, token_env: str, allow_remote_images: bool,
-               name: str = "remote", expected_cluster: str = "") -> None:
+               name: str = "remote", expected_cluster: str = "", ca_file: Path | None = None) -> None:
     from multi_receiver import Endpoint, load_routes
     if not allow_remote_images:
         raise ConfigError("explicit --allow-remote-images is required")
@@ -127,7 +127,8 @@ def add_remote(settings: Path, *, url: str, token_env: str, allow_remote_images:
     if not config.routes_file:
         raise ConfigError("configure the revised deployment first")
     spec = load_routes(config.routes_file,config.profile)
-    endpoint = Endpoint(name,"remote",url,token_env,expected_cluster)
+    ca = str(ca_file.expanduser().resolve()) if ca_file else ""
+    endpoint = Endpoint(name,"remote",url,token_env,expected_cluster,ca)
     if any(e.name == name for e in spec["parsed_endpoints"]):
         raise Conflict("endpoint name already exists")
     del spec["parsed_endpoints"]
@@ -423,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
     remote.add_argument("--name",default="remote")
     remote.add_argument("--token-env",default="LANSHOT_REMOTE_TOKEN")
     remote.add_argument("--expected-cluster",default="")
+    remote.add_argument("--ca-file",type=Path)
     remote.add_argument("--allow-remote-images",action="store_true")
     child = sub.add_parser("run-child")
     child.add_argument("--role", choices=ROLES, required=True)
@@ -435,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "add-remote":
             add_remote(args.settings,url=args.url,token_env=args.token_env,allow_remote_images=args.allow_remote_images,
-                       name=args.name,expected_cluster=args.expected_cluster)
+                       name=args.name,expected_cluster=args.expected_cluster,ca_file=args.ca_file)
             print("Remote route configured; no image transmitted and no remote server deployed.")
             return 0
         if args.command == "run-child":

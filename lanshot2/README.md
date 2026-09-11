@@ -4,7 +4,7 @@
 
 本目录现在是合并版 LanShot 的语音模块。统一入口位于 `../unified/LanShot.command`；截屏模式和语音模式不会同时运行。
 
-- 系统音频实时写入 `interviewer.txt`，原始音频写入 `interviewer.m4a`。
+- 系统音频实时写入 `interviewer.txt`，原始音频写入 `interviewer.wav`。
 - 麦克风实时写入 `me.txt`，原始音频写入 `me.wav`。
 - 两路使用相互独立的百炼 `qwen-audio-3.0-asr-flash-streaming` 连接，不混流。
 - 暂不包含 RAG、Skill、声纹识别、语音问题提交或 TTS。

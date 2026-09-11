@@ -37,6 +37,9 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('"action": "run-task"', source)
         self.assertIn("socket.send(.data(data))", source)
         self.assertNotIn("input_audio_buffer.append", source)
+        self.assertIn("CGMainDisplayID()", source)
+        self.assertIn('appendingPathComponent("interviewer.wav")', source)
+        self.assertIn("Data(repeating: 0, count: 3_200)", source)
 
 
 if __name__ == "__main__":

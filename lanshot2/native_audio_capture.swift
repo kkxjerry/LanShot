@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreMedia
+import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 import Security
@@ -53,6 +54,8 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
     private var completedSegments: [Int: String] = [:]
     private var currentSegments: [Int: String] = [:]
     private var taskFinished = false
+    private var heartbeatTask: Task<Void, Never>?
+    private var lastAudioAt = Date().timeIntervalSince1970
 
     init(outputURL: URL, apiKey: String) {
         self.outputURL = outputURL
@@ -116,6 +119,19 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
             bufferingPolicy: .bufferingNewest(200)
         )
         audioContinuation = continuation
+        lastAudioAt = Date().timeIntervalSince1970
+        heartbeatTask = Task { [weak self] in
+            while let self, !Task.isCancelled && !self.taskFinished {
+                try? await Task.sleep(for: .seconds(1))
+                let now = Date().timeIntervalSince1970
+                if now - self.lastAudioAt >= 5 {
+                    // heartbeat=true still requires occasional audio frames. A short silent PCM
+                    // frame keeps an idle system-audio channel alive without inventing speech.
+                    self.audioContinuation?.yield(Data(repeating: 0, count: 3_200))
+                    self.lastAudioAt = now
+                }
+            }
+        }
         sendTask = Task { [weak self, weak socket] in
             guard let self, let socket else { return }
             for await data in stream {
@@ -169,12 +185,15 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
               let samples = outputBuffer.int16ChannelData?[0] else {
             return
         }
+        lastAudioAt = Date().timeIntervalSince1970
         audioContinuation?.yield(
             Data(bytes: samples, count: Int(outputBuffer.frameLength) * MemoryLayout<Int16>.size)
         )
     }
 
     func finish() async {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         audioContinuation?.finish()
         _ = await sendTask?.result
         if let socket {
@@ -224,7 +243,10 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
             taskFinished = true
         case "task-failed":
             taskFinished = true
-            logError("task failed: \(header["error_code"] as? String ?? "UNKNOWN")")
+            let code = header["error_code"] as? String ?? "UNKNOWN"
+            let message = (header["error_message"] as? String ?? "")
+                .replacingOccurrences(of: "\n", with: " ")
+            logError("task failed: \(code) \(String(message.prefix(300)))")
         default:
             break
         }
@@ -442,78 +464,25 @@ func transcribeAudioFile(_ audioURL: URL, to outputURL: URL, locale: Locale) asy
 
 final class SystemAudioWriter {
     private let outputURL: URL
-    private var writer: AVAssetWriter?
-    private var input: AVAssetWriterInput?
+    private var file: AVAudioFile?
 
     init(outputURL: URL) {
         self.outputURL = outputURL
         try? FileManager.default.removeItem(at: outputURL)
     }
 
-    func append(_ sampleBuffer: CMSampleBuffer) {
-        guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
-        if writer == nil {
-            do {
-                try prepare(using: sampleBuffer)
-            } catch {
-                fputs("system audio writer error: \(error)\n", stderr)
-                return
+    func append(_ buffer: AVAudioPCMBuffer) {
+        do {
+            if file == nil {
+                file = try AVAudioFile(forWriting: outputURL, settings: buffer.format.settings)
             }
-        }
-        guard let writer, let input, writer.status == .writing, input.isReadyForMoreMediaData else {
-            return
-        }
-        if !input.append(sampleBuffer) {
-            fputs("system audio append error: \(writer.error?.localizedDescription ?? "unknown")\n", stderr)
+            try file?.write(from: buffer)
+        } catch {
+            fputs("system audio write error: \(error.localizedDescription)\n", stderr)
         }
     }
 
-    private func prepare(using sampleBuffer: CMSampleBuffer) throws {
-        guard let format = CMSampleBufferGetFormatDescription(sampleBuffer),
-              let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(format) else {
-            throw NSError(domain: "LanShotAudio", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "missing system audio format"
-            ])
-        }
-        let description = streamDescription.pointee
-        let channels = max(1, min(2, Int(description.mChannelsPerFrame)))
-        let sampleRate = max(8_000, description.mSampleRate)
-        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .m4a)
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: channels,
-            AVEncoderBitRateKey: 128_000,
-        ]
-        let input = AVAssetWriterInput(
-            mediaType: .audio,
-            outputSettings: settings,
-            sourceFormatHint: format
-        )
-        input.expectsMediaDataInRealTime = true
-        guard writer.canAdd(input) else {
-            throw NSError(domain: "LanShotAudio", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "cannot add system audio track"
-            ])
-        }
-        writer.add(input)
-        guard writer.startWriting() else {
-            throw writer.error ?? NSError(domain: "LanShotAudio", code: 3)
-        }
-        writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
-        self.writer = writer
-        self.input = input
-    }
-
-    func finish() async {
-        guard let writer, let input, writer.status == .writing else { return }
-        input.markAsFinished()
-        await withCheckedContinuation { continuation in
-            writer.finishWriting {
-                continuation.resume()
-            }
-        }
-    }
+    func finish() { file = nil }
 }
 
 final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
@@ -531,7 +500,6 @@ final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
         of outputType: SCStreamOutputType
     ) {
         if outputType == .audio {
-            systemWriter.append(sampleBuffer)
             guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else {
                 return
             }
@@ -549,6 +517,7 @@ final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
                 into: buffer.mutableAudioBufferList
             )
             if status == noErr {
+                systemWriter.append(buffer)
                 transcriber.append(buffer)
             }
         }
@@ -671,7 +640,8 @@ struct LanShotAudioCapture {
                 false,
                 onScreenWindowsOnly: true
             )
-            guard let display = content.displays.first else {
+            guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() })
+                ?? content.displays.first else {
                 throw NSError(domain: "LanShotAudio", code: 6, userInfo: [
                     NSLocalizedDescriptionKey: "no display available for system audio capture"
                 ])
@@ -679,7 +649,10 @@ struct LanShotAudioCapture {
 
             let apiKey = try loadBailianAPIKey()
             let systemWriter = SystemAudioWriter(
-                outputURL: outputDirectory.appendingPathComponent("interviewer.m4a")
+                outputURL: outputDirectory.appendingPathComponent("interviewer.wav")
+            )
+            try? FileManager.default.removeItem(
+                at: outputDirectory.appendingPathComponent("interviewer.m4a")
             )
             let interviewerTranscriber = QwenRealtimeTranscriber(
                 outputURL: outputDirectory.appendingPathComponent("interviewer.txt"),
@@ -731,7 +704,7 @@ struct LanShotAudioCapture {
             async let interviewerFinish: Void = interviewerTranscriber.finish()
             async let microphoneFinish: Void = microphoneTranscriber.finish()
             _ = await (interviewerFinish, microphoneFinish)
-            await systemWriter.finish()
+            systemWriter.finish()
             try "stopped\n".write(to: statusURL, atomically: true, encoding: .utf8)
             print("audio capture stopped")
         } catch {

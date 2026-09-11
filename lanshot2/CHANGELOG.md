@@ -7,6 +7,8 @@
 - 首次真实启动确认新应用身份需要单独授权屏幕与系统音频录制。启动脚本现具备失败回滚：双路音频未启动时会停止已拉起的截图服务，不再留下半启动状态。
 - 修复重新编译后旧授权开关仍显示开启、当前二进制却被TCC拒绝的问题：原先临时签名的 designated requirement 直接绑定每次变化的 CDHash；构建脚本现写入基于固定 Bundle ID `com.lanshot2.audio-capture` 的稳定 designated requirement。升级到该签名后只需重新授权一次，后续同标识构建不再因二进制哈希变化自动成为新身份。
 - 进一步读取TCC日志与数据库确认：对临时签名应用，系统设置反复开关仍保留旧CDHash要求，手写identifier requirement没有被ScreenCapture记录采用。构建现强制使用本机有效的Apple Development证书；缺少稳定证书时直接失败，不再生成看似可用、重编译后权限必坏的App。升级后需定向重置一次旧ScreenCapture记录。
+- 首次双路实采发现系统文字为空而麦克风识别到扬声器内容。修复三处链路问题：多显示器时明确选择 `CGMainDisplayID`；系统声道空闲时每5秒补100毫秒静音帧维持ASR任务；系统原始音频改为直接写PCM WAV，避免实时AAC Writer失败留下不可读M4A。ASR错误日志同时保留截断后的服务端错误信息。
+- 修复后真实系统音频验证通过：约37秒内 `interviewer.wav` 持续增长至14MB，`interviewer.txt` 连续输出与正在播放视频一致的文字，且无ASR错误。该轮麦克风文件仍停留在WAV头且无转写，需要在确认默认输入设备和实际说话后单独验收，不能据系统通道成功宣称双路全部通过。
 - 从 LanShot `develop` 创建独立 LanShot2 组合启动入口。
 - 截图、AI、悬浮窗和现有快捷键代码保持不变。
 - 新增独立 `com.lanshot2.audio-capture` 原生辅助程序。

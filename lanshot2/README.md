@@ -6,7 +6,7 @@ LanShot2 保留现有 LanShot 的截图、AI 分析、悬浮窗和 F22/F23/F24 �
 
 - 系统音频实时写入 `interviewer.txt`，原始音频写入 `interviewer.m4a`。
 - 麦克风实时写入 `me.txt`，原始音频写入 `me.wav`。
-- 两路使用相互独立的百炼实时 ASR 连接，不混流。
+- 两路使用相互独立的百炼 `qwen-audio-3.0-asr-flash-streaming` 连接，不混流。
 - 暂不包含 RAG、Skill、声纹识别、语音问题提交或 TTS。
 
 运行数据位于：

@@ -32,6 +32,8 @@ func loadBailianAPIKey() throws -> String {
 }
 
 final class QwenRealtimeTranscriber: @unchecked Sendable {
+    private static let model = "qwen-audio-3.0-asr-flash-streaming"
+    private static let endpoint = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
     private let outputURL: URL
     private let errorURL: URL
     private let apiKey: String
@@ -47,8 +49,10 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
     private var receiveTask: Task<Void, Never>?
     private var sendTask: Task<Void, Never>?
     private var audioContinuation: AsyncStream<Data>.Continuation?
-    private var completedSegments: [String] = []
-    private var currentText = ""
+    private var taskID = UUID().uuidString
+    private var completedSegments: [Int: String] = [:]
+    private var currentSegments: [Int: String] = [:]
+    private var taskFinished = false
 
     init(outputURL: URL, apiKey: String) {
         self.outputURL = outputURL
@@ -60,31 +64,53 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
     }
 
     func start() async throws {
-        let endpoint = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-asr-flash-realtime"
-        var request = URLRequest(url: URL(string: endpoint)!)
+        taskID = UUID().uuidString
+        taskFinished = false
+        completedSegments.removeAll()
+        currentSegments.removeAll()
+        var request = URLRequest(url: URL(string: Self.endpoint)!)
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
         let socket = URLSession.shared.webSocketTask(with: request)
         self.socket = socket
         socket.resume()
 
-        let update: [String: Any] = [
-            "event_id": "event_\(UUID().uuidString)",
-            "type": "session.update",
-            "session": [
-                "modalities": ["text"],
-                "input_audio_format": "pcm",
-                "sample_rate": 16_000,
-                "input_audio_transcription": ["language": "zh"],
-                "turn_detection": [
-                    "type": "server_vad",
-                    "threshold": 0.0,
-                    "silence_duration_ms": 500,
+        let runTask: [String: Any] = [
+            "header": [
+                "action": "run-task",
+                "task_id": taskID,
+                "streaming": "duplex",
+            ],
+            "payload": [
+                "task_group": "audio",
+                "task": "asr",
+                "function": "recognition",
+                "model": Self.model,
+                "parameters": [
+                    "format": "pcm",
+                    "sample_rate": 16_000,
+                    "language_hints": ["zh"],
+                    "semantic_punctuation_enabled": false,
+                    "max_sentence_silence": 500,
+                    "heartbeat": true,
                 ],
+                "input": [:] as [String: Any],
             ],
         ]
-        let updateData = try JSONSerialization.data(withJSONObject: update)
-        try await socket.send(.string(String(decoding: updateData, as: UTF8.self)))
+        try await sendJSON(runTask, over: socket)
+
+        while true {
+            let data = try await receiveWithTimeout(socket)
+            guard let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let header = message["header"] as? [String: Any],
+                  let event = header["event"] as? String else { continue }
+            if event == "task-started" { break }
+            if event == "task-failed" {
+                let code = header["error_code"] as? String ?? "TASK_START_FAILED"
+                throw NSError(domain: "LanShot2ASR", code: 12, userInfo: [
+                    NSLocalizedDescriptionKey: "ASR task failed: \(code)"
+                ])
+            }
+        }
 
         let (stream, continuation) = AsyncStream<Data>.makeStream(
             bufferingPolicy: .bufferingNewest(200)
@@ -93,14 +119,8 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
         sendTask = Task { [weak self, weak socket] in
             guard let self, let socket else { return }
             for await data in stream {
-                let event: [String: Any] = [
-                    "event_id": "event_\(UUID().uuidString)",
-                    "type": "input_audio_buffer.append",
-                    "audio": data.base64EncodedString(),
-                ]
                 do {
-                    let json = try JSONSerialization.data(withJSONObject: event)
-                    try await socket.send(.string(String(decoding: json, as: UTF8.self)))
+                    try await socket.send(.data(data))
                 } catch {
                     self.logError("send failed: \(error.localizedDescription)")
                     break
@@ -110,19 +130,11 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
         receiveTask = Task { [weak self, weak socket] in
             guard let self, let socket else { return }
             do {
-                while !Task.isCancelled {
-                    let message = try await socket.receive()
-                    switch message {
-                    case .string(let text):
-                        self.handleServerMessage(Data(text.utf8))
-                    case .data(let data):
-                        self.handleServerMessage(data)
-                    @unknown default:
-                        break
-                    }
+                while !Task.isCancelled && !self.taskFinished {
+                    self.handleServerMessage(try await Self.receiveData(socket))
                 }
             } catch {
-                if !Task.isCancelled {
+                if !Task.isCancelled && !self.taskFinished {
                     self.logError("receive failed: \(error.localizedDescription)")
                 }
             }
@@ -166,14 +178,18 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
         audioContinuation?.finish()
         _ = await sendTask?.result
         if let socket {
-            let event: [String: Any] = [
-                "event_id": "event_\(UUID().uuidString)",
-                "type": "session.finish",
+            let finishTask: [String: Any] = [
+                "header": [
+                    "action": "finish-task",
+                    "task_id": taskID,
+                    "streaming": "duplex",
+                ],
+                "payload": ["input": [:] as [String: Any]],
             ]
-            if let data = try? JSONSerialization.data(withJSONObject: event) {
-                try? await socket.send(.string(String(decoding: data, as: UTF8.self)))
+            try? await sendJSON(finishTask, over: socket)
+            for _ in 0..<40 where !taskFinished {
+                try? await Task.sleep(for: .milliseconds(50))
             }
-            try? await Task.sleep(for: .milliseconds(800))
             socket.cancel(with: .normalClosure, reason: nil)
         }
         receiveTask?.cancel()
@@ -182,41 +198,42 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
 
     private func handleServerMessage(_ data: Data) {
         guard let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = message["type"] as? String else {
+              let header = message["header"] as? [String: Any],
+              let event = header["event"] as? String else {
             return
         }
-        switch type {
-        case "conversation.item.input_audio_transcription.delta",
-             "conversation.item.input_audio_transcription.text":
-            let text = message["text"] as? String ?? ""
-            let stash = message["stash"] as? String ?? ""
-            currentText = text + stash
-            writeTranscript()
-        case "conversation.item.input_audio_transcription.completed":
-            let transcript = (message["transcript"] as? String)
-                ?? (message["text"] as? String)
-                ?? currentText
-            if !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                completedSegments.append(transcript)
-            }
-            currentText = ""
-            writeTranscript()
-        case "error", "conversation.item.input_audio_transcription.failed":
-            if let error = message["error"] as? [String: Any] {
-                logError(error["message"] as? String ?? String(describing: error))
+        switch event {
+        case "result-generated":
+            guard let payload = message["payload"] as? [String: Any],
+                  let output = payload["output"] as? [String: Any],
+                  let sentence = output["sentence"] as? [String: Any],
+                  sentence["heartbeat"] as? Bool != true,
+                  let sentenceID = sentence["sentence_id"] as? Int,
+                  sentenceID > 0 else { return }
+            let text = sentence["text"] as? String ?? ""
+            if sentence["sentence_end"] as? Bool == true {
+                currentSegments.removeValue(forKey: sentenceID)
+                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    completedSegments[sentenceID] = text
+                }
             } else {
-                logError(String(decoding: data, as: UTF8.self))
+                currentSegments[sentenceID] = text
             }
+            writeTranscript()
+        case "task-finished":
+            taskFinished = true
+        case "task-failed":
+            taskFinished = true
+            logError("task failed: \(header["error_code"] as? String ?? "UNKNOWN")")
         default:
             break
         }
     }
 
     private func writeTranscript() {
-        var parts = completedSegments
-        if !currentText.isEmpty {
-            parts.append(currentText)
-        }
+        let identifiers = Set(completedSegments.keys).union(currentSegments.keys).sorted()
+        let parts = identifiers.compactMap { completedSegments[$0] ?? currentSegments[$0] }
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         try? parts.joined(separator: "\n").write(
             to: outputURL,
             atomically: true,
@@ -233,6 +250,39 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
             try? handle.close()
         } else {
             try? line.write(to: errorURL, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private func sendJSON(_ value: [String: Any], over socket: URLSessionWebSocketTask) async throws {
+        let data = try JSONSerialization.data(withJSONObject: value)
+        try await socket.send(.string(String(decoding: data, as: UTF8.self)))
+    }
+
+    private func receiveWithTimeout(_ socket: URLSessionWebSocketTask) async throws -> Data {
+        try await withThrowingTaskGroup(of: Data.self) { group in
+            group.addTask { try await Self.receiveData(socket) }
+            group.addTask {
+                try await Task.sleep(for: .seconds(10))
+                throw NSError(domain: "LanShot2ASR", code: 13, userInfo: [
+                    NSLocalizedDescriptionKey: "ASR task start timed out"
+                ])
+            }
+            let data = try await group.next()!
+            group.cancelAll()
+            return data
+        }
+    }
+
+    private static func receiveData(_ socket: URLSessionWebSocketTask) async throws -> Data {
+        switch try await socket.receive() {
+        case .string(let text):
+            return Data(text.utf8)
+        case .data(let data):
+            return data
+        @unknown default:
+            throw NSError(domain: "LanShot2ASR", code: 14, userInfo: [
+                NSLocalizedDescriptionKey: "unsupported WebSocket message"
+            ])
         }
     }
 }

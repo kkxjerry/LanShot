@@ -2,6 +2,8 @@
 
 ## 2026-09-11
 
+- 两路实时 ASR 从旧 `qwen3-asr-flash-realtime` Realtime 协议迁移为 `qwen-audio-3.0-asr-flash-streaming` Inference WebSocket 协议；严格等待 `task-started` 后发送二进制 PCM，并处理 `result-generated`、`task-finished` 和 `task-failed`。
+- 使用本机钥匙串凭据和公开 16kHz PCM 测试音频完成真实云端验证：收到 `task-started`、1 条非空 Final 文字和 `task-finished`，未输出或写入明文凭据。
 - 从 LanShot `develop` 创建独立 LanShot2 组合启动入口。
 - 截图、AI、悬浮窗和现有快捷键代码保持不变。
 - 新增独立 `com.lanshot2.audio-capture` 原生辅助程序。

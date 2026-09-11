@@ -26,6 +26,11 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('appendingPathComponent("me.txt")', source)
         self.assertIn("realtimeTranscriber.append(buffer)", source)
         self.assertIn("await (interviewerFinish, microphoneFinish)", source)
+        self.assertIn('"qwen-audio-3.0-asr-flash-streaming"', source)
+        self.assertIn('"wss://dashscope.aliyuncs.com/api-ws/v1/inference"', source)
+        self.assertIn('"action": "run-task"', source)
+        self.assertIn("socket.send(.data(data))", source)
+        self.assertNotIn("input_audio_buffer.append", source)
 
 
 if __name__ == "__main__":

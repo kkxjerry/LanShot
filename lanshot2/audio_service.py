@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-APP = ROOT / "LanShot2AudioCapture.app"
+APP = ROOT / "LanShot Voice Capture.app"
 DEFAULT_OUTPUT = Path.home() / "Library/Application Support/LanShot2/audio"
 
 

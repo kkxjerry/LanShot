@@ -17,7 +17,7 @@ def load_audio_service():
 class LanShot2Tests(unittest.TestCase):
     def test_uses_separate_runtime_and_app(self):
         service = load_audio_service()
-        self.assertEqual(service.APP.name, "LanShot2AudioCapture.app")
+        self.assertEqual(service.APP.name, "LanShot Voice Capture.app")
         self.assertEqual(service.DEFAULT_OUTPUT.parts[-2:], ("LanShot2", "audio"))
 
     def test_background_capture_uses_app_identity(self):
@@ -53,6 +53,7 @@ class LanShot2Tests(unittest.TestCase):
     def test_app_uses_final_stable_bundle_identity(self):
         plist = (ROOT / "Info.plist").read_text(encoding="utf-8")
         self.assertIn("com.lanshot.unified.voice-capture", plist)
+        self.assertIn("LanShot Voice Capture", plist)
         self.assertNotIn("NSSpeechRecognitionUsageDescription", plist)
 
 

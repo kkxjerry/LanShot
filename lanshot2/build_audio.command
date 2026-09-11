@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
-APP="$SCRIPT_DIR/LanShot2AudioCapture.app"
+APP="$SCRIPT_DIR/LanShot Voice Capture.app"
 EXECUTABLE="$APP/Contents/MacOS/native_audio_capture"
 IDENTITY="${LANSHOT_CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/"Apple Development:/ { print $2; exit }')}"
 

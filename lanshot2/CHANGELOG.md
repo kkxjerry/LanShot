@@ -12,6 +12,7 @@
 - 继续实测发现运行数分钟后系统与麦克风文件同时停止增长、进程却仍存活；默认输入输出为蓝牙 `KKX`，独立 AVAudioEngine 麦克风没有收到帧。macOS 15及以上现改为同一个 ScreenCaptureKit 流分别消费 `.audio` 与 `.microphone`，共享生命周期并避免蓝牙路由切换导致独立引擎失活；macOS 13/14保留旧引擎回退。后台辅助程序同时关闭自动终止和突然终止，防止无窗口运行被系统判定为空闲。
 - 签名切换后的首次 `.audio + .microphone` 启动被 RunningBoard 以 `Two equal instances have unequal identities` 直接终止，且旧控制器因残留 `capture.log=running` 误报健康。控制器现绕过 LaunchServices缓存，直接启动已签名Bundle内的可执行文件，独立进程组运行并写入 `runtime.log`；启动后复查PID，状态命令也会把“running但无PID”报告为失败。
 - 直接执行二进制使TCC将父进程识别为隐私责任主体，遗留的本地Speech授权请求因此触发系统强制退出。最终方案恢复标准App启动，删除未使用的Speech框架、权限请求、Info声明和entitlement，并启用全新稳定身份 `com.lanshot.unified.voice-capture`，彻底隔离此前反复签名产生的LaunchServices/RunningBoard缓存。该身份后续禁止变更。
+- 用户截图确认系统设置仍只展示旧文件名 `LanShot2AudioCapture.app`，导致旧TCC记录与新Bundle身份无法区分。最终App目录同步改名为 `LanShot Voice Capture.app`；迁移时注销并移走旧包，只保留一个可见名称与一个固定Bundle ID。
 - 从 LanShot `develop` 创建独立 LanShot2 组合启动入口。
 - 截图、AI、悬浮窗和现有快捷键代码保持不变。
 - 新增独立 `com.lanshot2.audio-capture` 原生辅助程序。

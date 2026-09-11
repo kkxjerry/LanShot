@@ -1,0 +1,31 @@
+# LanShot 统一模式
+
+更新时间：2026-09-12。
+
+LanShot 与 LanShot2 已通过统一控制器合并。两种模式互斥，切换时先停止当前模式再启动目标模式。
+
+## 截屏模式
+
+- 保留原有截图、AI分析和悬浮窗。
+- F22截图，F23/F24翻页，Command+F23显隐。
+- 不启动双路音频采集。
+
+## 语音模式
+
+- 只启动系统音频和麦克风双路实时ASR。
+- 两路都使用 `qwen-audio-3.0-asr-flash-streaming`。
+- 不启动截图快捷键和截图悬浮窗。
+- 文字与音频保存在 `~/Library/Application Support/LanShot2/audio/`。
+
+## 使用
+
+双击 `LanShot.command`，在原生对话框中选择截屏模式、语音模式或全部停止。
+
+也可以直接双击：
+
+- `screenshot_mode.command`
+- `voice_mode.command`
+- `stop_all.command`
+- `status.command`
+
+程序不会自动开始语音监听。只有明确切换到语音模式时才会开始采集。切换到截屏模式或全部停止时，音频采集立即结束。

@@ -1,8 +1,8 @@
-# LanShot2
+# LanShot2 音频模块
 
 更新时间：2026-09-11。
 
-LanShot2 保留现有 LanShot 的截图、AI 分析、悬浮窗和 F22/F23/F24 行为，只新增需要用户主动启动的双路音频采集：
+本目录现在是合并版 LanShot 的语音模块。统一入口位于 `../unified/LanShot.command`；截屏模式和语音模式不会同时运行。
 
 - 系统音频实时写入 `interviewer.txt`，原始音频写入 `interviewer.m4a`。
 - 麦克风实时写入 `me.txt`，原始音频写入 `me.wav`。

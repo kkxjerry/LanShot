@@ -6,6 +6,7 @@
 - 使用本机钥匙串凭据和公开 16kHz PCM 测试音频完成真实云端验证：收到 `task-started`、1 条非空 Final 文字和 `task-finished`，未输出或写入明文凭据。
 - 首次真实启动确认新应用身份需要单独授权屏幕与系统音频录制。启动脚本现具备失败回滚：双路音频未启动时会停止已拉起的截图服务，不再留下半启动状态。
 - 修复重新编译后旧授权开关仍显示开启、当前二进制却被TCC拒绝的问题：原先临时签名的 designated requirement 直接绑定每次变化的 CDHash；构建脚本现写入基于固定 Bundle ID `com.lanshot2.audio-capture` 的稳定 designated requirement。升级到该签名后只需重新授权一次，后续同标识构建不再因二进制哈希变化自动成为新身份。
+- 进一步读取TCC日志与数据库确认：对临时签名应用，系统设置反复开关仍保留旧CDHash要求，手写identifier requirement没有被ScreenCapture记录采用。构建现强制使用本机有效的Apple Development证书；缺少稳定证书时直接失败，不再生成看似可用、重编译后权限必坏的App。升级后需定向重置一次旧ScreenCapture记录。
 - 从 LanShot `develop` 创建独立 LanShot2 组合启动入口。
 - 截图、AI、悬浮窗和现有快捷键代码保持不变。
 - 新增独立 `com.lanshot2.audio-capture` 原生辅助程序。

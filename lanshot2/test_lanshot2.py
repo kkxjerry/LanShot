@@ -20,6 +20,10 @@ class LanShot2Tests(unittest.TestCase):
         self.assertEqual(service.APP.name, "LanShot2AudioCapture.app")
         self.assertEqual(service.DEFAULT_OUTPUT.parts[-2:], ("LanShot2", "audio"))
 
+    def test_build_uses_stable_designated_requirement(self):
+        source = (ROOT / "build_audio.command").read_text(encoding="utf-8")
+        self.assertIn('designated => identifier "com.lanshot2.audio-capture"', source)
+
     def test_native_capture_has_two_realtime_transcribers(self):
         source = (ROOT / "native_audio_capture.swift").read_text(encoding="utf-8")
         self.assertIn('appendingPathComponent("interviewer.txt")', source)

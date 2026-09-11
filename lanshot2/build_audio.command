@@ -20,6 +20,7 @@ xcrun swiftc \
   -framework Speech
 
 codesign --force --sign - \
+  --requirements '=designated => identifier "com.lanshot2.audio-capture"' \
   --entitlements "$SCRIPT_DIR/audio.entitlements" \
   "$APP"
 echo "$EXECUTABLE"

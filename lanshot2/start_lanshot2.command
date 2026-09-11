@@ -26,5 +26,9 @@ if (( manager_status == 1 )); then
   exit 1
 fi
 
-"$SCRIPT_DIR/audio_service.py" start
+if ! "$SCRIPT_DIR/audio_service.py" start; then
+  echo "双路音频启动失败，正在回滚已经启动的 LanShot 服务。"
+  python3 "$PROJECT_DIR/screenshot-sender/manage_services.py" stop --settings "$SETTINGS" || true
+  exit 1
+fi
 echo "LanShot2 已启动：截图能力保持原样，系统音频与麦克风正在分别实时转写。"

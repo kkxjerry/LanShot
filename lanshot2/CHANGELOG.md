@@ -9,6 +9,9 @@
 - 进一步读取TCC日志与数据库确认：对临时签名应用，系统设置反复开关仍保留旧CDHash要求，手写identifier requirement没有被ScreenCapture记录采用。构建现强制使用本机有效的Apple Development证书；缺少稳定证书时直接失败，不再生成看似可用、重编译后权限必坏的App。升级后需定向重置一次旧ScreenCapture记录。
 - 首次双路实采发现系统文字为空而麦克风识别到扬声器内容。修复三处链路问题：多显示器时明确选择 `CGMainDisplayID`；系统声道空闲时每5秒补100毫秒静音帧维持ASR任务；系统原始音频改为直接写PCM WAV，避免实时AAC Writer失败留下不可读M4A。ASR错误日志同时保留截断后的服务端错误信息。
 - 修复后真实系统音频验证通过：约37秒内 `interviewer.wav` 持续增长至14MB，`interviewer.txt` 连续输出与正在播放视频一致的文字，且无ASR错误。该轮麦克风文件仍停留在WAV头且无转写，需要在确认默认输入设备和实际说话后单独验收，不能据系统通道成功宣称双路全部通过。
+- 继续实测发现运行数分钟后系统与麦克风文件同时停止增长、进程却仍存活；默认输入输出为蓝牙 `KKX`，独立 AVAudioEngine 麦克风没有收到帧。macOS 15及以上现改为同一个 ScreenCaptureKit 流分别消费 `.audio` 与 `.microphone`，共享生命周期并避免蓝牙路由切换导致独立引擎失活；macOS 13/14保留旧引擎回退。后台辅助程序同时关闭自动终止和突然终止，防止无窗口运行被系统判定为空闲。
+- 签名切换后的首次 `.audio + .microphone` 启动被 RunningBoard 以 `Two equal instances have unequal identities` 直接终止，且旧控制器因残留 `capture.log=running` 误报健康。控制器现绕过 LaunchServices缓存，直接启动已签名Bundle内的可执行文件，独立进程组运行并写入 `runtime.log`；启动后复查PID，状态命令也会把“running但无PID”报告为失败。
+- 直接执行二进制使TCC将父进程识别为隐私责任主体，遗留的本地Speech授权请求因此触发系统强制退出。最终方案恢复标准App启动，删除未使用的Speech框架、权限请求、Info声明和entitlement，并启用全新稳定身份 `com.lanshot.unified.voice-capture`，彻底隔离此前反复签名产生的LaunchServices/RunningBoard缓存。该身份后续禁止变更。
 - 从 LanShot `develop` 创建独立 LanShot2 组合启动入口。
 - 截图、AI、悬浮窗和现有快捷键代码保持不变。
 - 新增独立 `com.lanshot2.audio-capture` 原生辅助程序。

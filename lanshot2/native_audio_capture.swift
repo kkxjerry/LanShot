@@ -4,7 +4,6 @@ import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 import Security
-import Speech
 
 func loadBailianAPIKey() throws -> String {
     if let value = ProcessInfo.processInfo.environment["DASHSCOPE_API_KEY"]?.trimmingCharacters(
@@ -309,164 +308,13 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
     }
 }
 
-final class LocalTranscriber: @unchecked Sendable {
+final class AudioFileWriter {
     private let label: String
-    private let outputURL: URL
-    private let errorURL: URL
-    private let recognizer: SFSpeechRecognizer
-    private let lock = NSLock()
-    private var request: SFSpeechAudioBufferRecognitionRequest?
-    private var task: SFSpeechRecognitionTask?
-    private var completedSegments: [String] = []
-    private var currentText = ""
-    private var stopped = false
-
-    init(label: String, outputURL: URL, locale: Locale) throws {
-        guard let recognizer = SFSpeechRecognizer(locale: locale) else {
-            throw NSError(domain: "LanShotAudio", code: 7, userInfo: [
-                NSLocalizedDescriptionKey: "speech locale is unavailable: \(locale.identifier)"
-            ])
-        }
-        guard recognizer.supportsOnDeviceRecognition else {
-            throw NSError(domain: "LanShotAudio", code: 8, userInfo: [
-                NSLocalizedDescriptionKey: "on-device speech recognition is unavailable for \(locale.identifier)"
-            ])
-        }
-        self.label = label
-        self.outputURL = outputURL
-        self.errorURL = outputURL.deletingPathExtension().appendingPathExtension("errors.log")
-        self.recognizer = recognizer
-        try? FileManager.default.removeItem(at: outputURL)
-        try? FileManager.default.removeItem(at: errorURL)
-    }
-
-    private func startTaskLocked() {
-        guard !stopped else { return }
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        request.requiresOnDeviceRecognition = true
-        request.addsPunctuation = true
-        request.taskHint = .dictation
-        self.request = request
-        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            self?.handle(result: result, error: error)
-        }
-    }
-
-    private func handle(result: SFSpeechRecognitionResult?, error: Error?) {
-        lock.lock()
-        defer { lock.unlock() }
-        if let result {
-            currentText = result.bestTranscription.formattedString
-            writeTranscriptLocked()
-            print("[\(label)] \(currentText)")
-            fflush(stdout)
-        }
-        if result?.isFinal == true || error != nil {
-            if !currentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                completedSegments.append(currentText)
-            }
-            currentText = ""
-            request = nil
-            task = nil
-            writeTranscriptLocked()
-            if let error, !stopped {
-                let nsError = error as NSError
-                let message = "\(Date()): \(nsError.domain) \(nsError.code): \(nsError.localizedDescription)\n"
-                if let data = message.data(using: .utf8),
-                   let handle = try? FileHandle(forWritingTo: errorURL) {
-                    _ = try? handle.seekToEnd()
-                    try? handle.write(contentsOf: data)
-                    try? handle.close()
-                } else {
-                    try? message.write(to: errorURL, atomically: true, encoding: .utf8)
-                }
-            }
-        }
-    }
-
-    func append(_ sampleBuffer: CMSampleBuffer) {
-        lock.lock()
-        if request == nil {
-            startTaskLocked()
-        }
-        request?.appendAudioSampleBuffer(sampleBuffer)
-        lock.unlock()
-    }
-
-    func append(_ buffer: AVAudioPCMBuffer) {
-        lock.lock()
-        if request == nil {
-            startTaskLocked()
-        }
-        request?.append(buffer)
-        lock.unlock()
-    }
-
-    func finish() {
-        lock.lock()
-        stopped = true
-        request?.endAudio()
-        task?.cancel()
-        request = nil
-        task = nil
-        if !currentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            completedSegments.append(currentText)
-            currentText = ""
-        }
-        writeTranscriptLocked()
-        lock.unlock()
-    }
-
-    private func writeTranscriptLocked() {
-        var parts = completedSegments
-        if !currentText.isEmpty {
-            parts.append(currentText)
-        }
-        let text = parts.joined(separator: "\n")
-        do {
-            try text.write(to: outputURL, atomically: true, encoding: .utf8)
-        } catch {
-            fputs("transcript write error: \(error.localizedDescription)\n", stderr)
-        }
-    }
-}
-
-func transcribeAudioFile(_ audioURL: URL, to outputURL: URL, locale: Locale) async throws {
-    guard let recognizer = SFSpeechRecognizer(locale: locale),
-          recognizer.supportsOnDeviceRecognition else {
-        throw NSError(domain: "LanShotAudio", code: 10, userInfo: [
-            NSLocalizedDescriptionKey: "on-device file transcription is unavailable"
-        ])
-    }
-    let request = SFSpeechURLRecognitionRequest(url: audioURL)
-    request.requiresOnDeviceRecognition = true
-    request.addsPunctuation = true
-    request.taskHint = .dictation
-    let transcript: String = try await withCheckedThrowingContinuation { continuation in
-        let callbackLock = NSLock()
-        var completed = false
-        _ = recognizer.recognitionTask(with: request) { result, error in
-            callbackLock.lock()
-            defer { callbackLock.unlock() }
-            guard !completed else { return }
-            if let error {
-                completed = true
-                continuation.resume(throwing: error)
-            } else if let result, result.isFinal {
-                completed = true
-                continuation.resume(returning: result.bestTranscription.formattedString)
-            }
-        }
-    }
-    try transcript.write(to: outputURL, atomically: true, encoding: .utf8)
-}
-
-final class SystemAudioWriter {
     private let outputURL: URL
     private var file: AVAudioFile?
 
-    init(outputURL: URL) {
+    init(label: String, outputURL: URL) {
+        self.label = label
         self.outputURL = outputURL
         try? FileManager.default.removeItem(at: outputURL)
     }
@@ -478,7 +326,7 @@ final class SystemAudioWriter {
             }
             try file?.write(from: buffer)
         } catch {
-            fputs("system audio write error: \(error.localizedDescription)\n", stderr)
+            fputs("\(label) audio write error: \(error.localizedDescription)\n", stderr)
         }
     }
 
@@ -486,12 +334,21 @@ final class SystemAudioWriter {
 }
 
 final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
-    let systemWriter: SystemAudioWriter
-    let transcriber: QwenRealtimeTranscriber
+    let systemWriter: AudioFileWriter
+    let microphoneWriter: AudioFileWriter
+    let systemTranscriber: QwenRealtimeTranscriber
+    let microphoneTranscriber: QwenRealtimeTranscriber
 
-    init(systemWriter: SystemAudioWriter, transcriber: QwenRealtimeTranscriber) {
+    init(
+        systemWriter: AudioFileWriter,
+        microphoneWriter: AudioFileWriter,
+        systemTranscriber: QwenRealtimeTranscriber,
+        microphoneTranscriber: QwenRealtimeTranscriber
+    ) {
         self.systemWriter = systemWriter
-        self.transcriber = transcriber
+        self.microphoneWriter = microphoneWriter
+        self.systemTranscriber = systemTranscriber
+        self.microphoneTranscriber = microphoneTranscriber
     }
 
     func stream(
@@ -499,7 +356,14 @@ final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
+        let destination: (AudioFileWriter, QwenRealtimeTranscriber)
         if outputType == .audio {
+            destination = (systemWriter, systemTranscriber)
+        } else if #available(macOS 15.0, *), outputType == .microphone {
+            destination = (microphoneWriter, microphoneTranscriber)
+        } else {
+            return
+        }
             guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else {
                 return
             }
@@ -517,10 +381,9 @@ final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
                 into: buffer.mutableAudioBufferList
             )
             if status == noErr {
-                systemWriter.append(buffer)
-                transcriber.append(buffer)
+                destination.0.append(buffer)
+                destination.1.append(buffer)
             }
-        }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -590,14 +453,6 @@ func waitForStopSignal() async {
     }
 }
 
-func requestSpeechAuthorization() async -> SFSpeechRecognizerAuthorizationStatus {
-    await withCheckedContinuation { continuation in
-        SFSpeechRecognizer.requestAuthorization { status in
-            continuation.resume(returning: status)
-        }
-    }
-}
-
 @main
 struct LanShotAudioCapture {
     static func main() async {
@@ -608,6 +463,12 @@ struct LanShotAudioCapture {
         let outputDirectory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         let statusURL = outputDirectory.appendingPathComponent("capture.log")
         let pidURL = outputDirectory.appendingPathComponent("capture.pid")
+        ProcessInfo.processInfo.disableAutomaticTermination("LanShot2 audio capture is active")
+        ProcessInfo.processInfo.disableSuddenTermination()
+        defer {
+            ProcessInfo.processInfo.enableSuddenTermination()
+            ProcessInfo.processInfo.enableAutomaticTermination("LanShot2 audio capture stopped")
+        }
         do {
             try FileManager.default.createDirectory(
                 at: outputDirectory,
@@ -630,12 +491,6 @@ struct LanShotAudioCapture {
                     NSLocalizedDescriptionKey: "microphone permission denied"
                 ])
             }
-            guard await requestSpeechAuthorization() == .authorized else {
-                throw NSError(domain: "LanShotAudio", code: 9, userInfo: [
-                    NSLocalizedDescriptionKey: "speech recognition permission denied"
-                ])
-            }
-
             let content = try await SCShareableContent.excludingDesktopWindows(
                 false,
                 onScreenWindowsOnly: true
@@ -648,8 +503,13 @@ struct LanShotAudioCapture {
             }
 
             let apiKey = try loadBailianAPIKey()
-            let systemWriter = SystemAudioWriter(
+            let systemWriter = AudioFileWriter(
+                label: "system",
                 outputURL: outputDirectory.appendingPathComponent("interviewer.wav")
+            )
+            let microphoneWriter = AudioFileWriter(
+                label: "microphone",
+                outputURL: outputDirectory.appendingPathComponent("me.wav")
             )
             try? FileManager.default.removeItem(
                 at: outputDirectory.appendingPathComponent("interviewer.m4a")
@@ -664,13 +524,11 @@ struct LanShotAudioCapture {
             )
             try await interviewerTranscriber.start()
             try await microphoneTranscriber.start()
-            let microphone = MicrophoneRecorder(
-                outputURL: outputDirectory.appendingPathComponent("me.wav"),
-                realtimeTranscriber: microphoneTranscriber
-            )
             let captureOutput = CaptureOutput(
                 systemWriter: systemWriter,
-                transcriber: interviewerTranscriber
+                microphoneWriter: microphoneWriter,
+                systemTranscriber: interviewerTranscriber,
+                microphoneTranscriber: microphoneTranscriber
             )
             let configuration = SCStreamConfiguration()
             configuration.width = 2
@@ -682,17 +540,30 @@ struct LanShotAudioCapture {
             configuration.excludesCurrentProcessAudio = true
             configuration.sampleRate = 48_000
             configuration.channelCount = 2
+            let legacyMicrophone: MicrophoneRecorder?
+            if #available(macOS 15.0, *) {
+                configuration.captureMicrophone = true
+                legacyMicrophone = nil
+            } else {
+                legacyMicrophone = MicrophoneRecorder(
+                    outputURL: outputDirectory.appendingPathComponent("me.wav"),
+                    realtimeTranscriber: microphoneTranscriber
+                )
+            }
 
             let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
             let stream = SCStream(filter: filter, configuration: configuration, delegate: captureOutput)
-            let audioQueue = DispatchQueue(label: "lanshot.system-audio")
+            let audioQueue = DispatchQueue(label: "lanshot.dual-audio")
             try stream.addStreamOutput(captureOutput, type: .audio, sampleHandlerQueue: audioQueue)
+            if #available(macOS 15.0, *) {
+                try stream.addStreamOutput(captureOutput, type: .microphone, sampleHandlerQueue: audioQueue)
+            }
 
-            try microphone.start()
+            try legacyMicrophone?.start()
             try await stream.startCapture()
             try "running\n".write(to: statusURL, atomically: true, encoding: .utf8)
             print("audio capture started")
-            print("interviewer: \(outputDirectory.appendingPathComponent("interviewer.m4a").path)")
+            print("interviewer: \(outputDirectory.appendingPathComponent("interviewer.wav").path)")
             print("me: \(outputDirectory.appendingPathComponent("me.wav").path)")
             print("interviewer transcript: \(outputDirectory.appendingPathComponent("interviewer.txt").path)")
             print("my transcript: \(outputDirectory.appendingPathComponent("me.txt").path)")
@@ -700,11 +571,12 @@ struct LanShotAudioCapture {
 
             await waitForStopSignal()
             try await stream.stopCapture()
-            microphone.stop()
+            legacyMicrophone?.stop()
             async let interviewerFinish: Void = interviewerTranscriber.finish()
             async let microphoneFinish: Void = microphoneTranscriber.finish()
             _ = await (interviewerFinish, microphoneFinish)
             systemWriter.finish()
+            microphoneWriter.finish()
             try "stopped\n".write(to: statusURL, atomically: true, encoding: .utf8)
             print("audio capture stopped")
         } catch {

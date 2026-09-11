@@ -22,8 +22,7 @@ xcrun swiftc \
   -framework CoreMedia \
   -framework Foundation \
   -framework ScreenCaptureKit \
-  -framework Security \
-  -framework Speech
+  -framework Security
 
 codesign --force --sign "$IDENTITY" --timestamp=none \
   --entitlements "$SCRIPT_DIR/audio.entitlements" \

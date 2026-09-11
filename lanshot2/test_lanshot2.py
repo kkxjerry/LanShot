@@ -20,6 +20,10 @@ class LanShot2Tests(unittest.TestCase):
         self.assertEqual(service.APP.name, "LanShot2AudioCapture.app")
         self.assertEqual(service.DEFAULT_OUTPUT.parts[-2:], ("LanShot2", "audio"))
 
+    def test_background_capture_uses_app_identity(self):
+        source = (ROOT / "audio_service.py").read_text(encoding="utf-8")
+        self.assertIn('["open", "-n"', source)
+
     def test_build_requires_stable_development_identity(self):
         source = (ROOT / "build_audio.command").read_text(encoding="utf-8")
         self.assertIn("Apple Development:", source)
@@ -40,6 +44,16 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn("CGMainDisplayID()", source)
         self.assertIn('appendingPathComponent("interviewer.wav")', source)
         self.assertIn("Data(repeating: 0, count: 3_200)", source)
+        self.assertIn("configuration.captureMicrophone = true", source)
+        self.assertIn("type: .microphone", source)
+        self.assertIn("disableAutomaticTermination", source)
+        self.assertNotIn("import Speech", source)
+        self.assertNotIn("requestSpeechAuthorization", source)
+
+    def test_app_uses_final_stable_bundle_identity(self):
+        plist = (ROOT / "Info.plist").read_text(encoding="utf-8")
+        self.assertIn("com.lanshot.unified.voice-capture", plist)
+        self.assertNotIn("NSSpeechRecognitionUsageDescription", plist)
 
 
 if __name__ == "__main__":

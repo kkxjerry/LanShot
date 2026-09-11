@@ -52,6 +52,10 @@ def start(output: Path) -> int:
     while time.monotonic() < deadline:
         state = read_text(output / "capture.log")
         if state == "running":
+            time.sleep(0.5)
+            if not process_id(output):
+                print("音频辅助进程启动后意外退出", file=sys.stderr)
+                return 1
             print(f"LanShot2 双路采集和实时识别已启动：{output}")
             return 0
         if state.startswith("failed:"):
@@ -90,6 +94,8 @@ def stop(output: Path) -> int:
 def status(output: Path) -> int:
     pid = process_id(output)
     state = read_text(output / "capture.log") or "未启动"
+    if state == "running" and not pid:
+        state = "failed: process exited unexpectedly"
     print(f"状态：{state}")
     print(f"进程：{pid if pid else '无'}")
     print(f"目录：{output}")

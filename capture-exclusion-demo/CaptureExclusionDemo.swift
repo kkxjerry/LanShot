@@ -280,6 +280,10 @@ final class LatestAnswerMonitor {
     }
 
     private func voiceStatusText(state: String) -> String {
+        let hotkeyReady = readText(
+            from: displayDirectory.appendingPathComponent("voice_hotkey_status.txt")
+        ) == "ready"
+        let startHint = hotkeyReady ? "点击开始采集或按 F23" : "点击开始采集"
         switch state {
         case "running":
             let pidURL = displayDirectory.appendingPathComponent("capture.pid")
@@ -297,19 +301,20 @@ final class LatestAnswerMonitor {
             )
             let elapsed = max(0, Int(Date().timeIntervalSince(startedAt)))
             return String(
-                format: "正在采集 | %@ 开始 | %02d:%02d",
+                format: "正在采集 | %@ 开始 | %02d:%02d | %@",
                 startTime,
                 elapsed / 60,
-                elapsed % 60
+                elapsed % 60,
+                hotkeyReady ? "F23 停止" : "按钮停止"
             )
         case "starting":
-            return "正在启动采集..."
+            return hotkeyReady ? "正在启动采集... | F23 停止" : "正在启动采集..."
         case "stopping":
             return "正在停止采集..."
         case let value where value.hasPrefix("failed:"):
-            return "采集失败 | 请重新开始"
+            return "采集失败 | \(startHint)"
         default:
-            return "尚未采集 | 点击开始采集"
+            return "尚未采集 | \(startHint)"
         }
     }
 

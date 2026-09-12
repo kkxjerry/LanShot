@@ -101,6 +101,13 @@ class ModeController:
         except (OSError, ValueError):
             return False
 
+    def _voice_hotkey_ready(self) -> bool:
+        status_file = Path.home() / "Library/Application Support/LanShot2/audio/voice_hotkey_status.txt"
+        try:
+            return status_file.read_text(encoding="utf-8").strip() == "ready"
+        except OSError:
+            return False
+
     def _screenshot_running(self) -> bool:
         result = self._run([
             "/usr/bin/pgrep", "-f",
@@ -228,6 +235,7 @@ class ModeController:
             "voice_running": voice,
             "voice_overlay_running": voice_overlay,
             "voice_control_running": voice_control,
+            "voice_hotkey_ready": self._voice_hotkey_ready() if voice_control else False,
             "screenshot_running": screenshot,
             "godhands_running": self._godhands_running(),
             "audio_directory": str(Path.home() / "Library/Application Support/LanShot2/audio"),

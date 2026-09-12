@@ -4,6 +4,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -44,13 +45,23 @@ def control_process_id(output: Path) -> int | None:
     return tracked_process_id(output, "voice_control.pid")
 
 
+def write_capture_command(output: Path, action: str) -> None:
+    if action not in ("start", "stop", "quit"):
+        raise ValueError("unsupported capture command")
+    command = output / "voice_capture_command.txt"
+    temporary = command.with_suffix(".tmp")
+    temporary.write_text(f"{action} {time.time_ns()}\n", encoding="utf-8")
+    os.replace(temporary, command)
+
+
 def start_control(output: Path) -> None:
     if control_process_id(output):
         return
-    try:
-        (output / "voice_control.pid").unlink()
-    except FileNotFoundError:
-        pass
+    for name in ("voice_control.pid", "voice_hotkey_status.txt"):
+        try:
+            (output / name).unlink()
+        except FileNotFoundError:
+            pass
     subprocess.Popen(
         [sys.executable, str(Path(__file__).resolve()), "control-loop", "--output", str(output)],
         stdin=subprocess.DEVNULL,
@@ -71,10 +82,7 @@ def stop_control(output: Path) -> bool:
     pid = control_process_id(output)
     if not pid:
         return True
-    command = output / "voice_capture_command.txt"
-    temporary = command.with_suffix(".tmp")
-    temporary.write_text(f"quit {time.time_ns()}\n", encoding="utf-8")
-    os.replace(temporary, command)
+    write_capture_command(output, "quit")
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         if not control_process_id(output):
@@ -264,6 +272,23 @@ def control_loop(output: Path) -> int:
     pid_url = output / "voice_control.pid"
     command_url = output / "voice_capture_command.txt"
     stopping = False
+    hotkey_stop = threading.Event()
+
+    screenshot_sender = ROOT.parent / "screenshot-sender"
+    sys.path.insert(0, str(screenshot_sender))
+    from sender_service import MacF24Listener
+
+    hotkey_listener = MacF24Listener()
+
+    def toggle_capture() -> None:
+        state = read_text(output / "capture.log")
+        action = "stop" if state in ("running", "starting") else "start"
+        requested_state = "stopping" if action == "stop" else "starting"
+        (output / "capture.log").write_text(f"{requested_state}\n", encoding="utf-8")
+        write_capture_command(output, action)
+
+    def ignore_hotkey() -> None:
+        return
 
     def request_stop(_signal: int, _frame: object) -> None:
         nonlocal stopping
@@ -273,6 +298,32 @@ def control_loop(output: Path) -> int:
     signal.signal(signal.SIGINT, request_stop)
     pid_url.write_text(f"{os.getpid()}\n", encoding="utf-8")
     last_command = read_text(command_url)
+    hotkey_thread = threading.Thread(
+        target=hotkey_listener.run,
+        args=(
+            hotkey_stop,
+            ignore_hotkey,
+            toggle_capture,
+            ignore_hotkey,
+            ignore_hotkey,
+            ignore_hotkey,
+        ),
+        name="lanshot-voice-f23",
+        daemon=True,
+    )
+    hotkey_thread.start()
+    hotkey_deadline = time.monotonic() + 3
+    while (
+        time.monotonic() < hotkey_deadline
+        and not hotkey_listener.ready.is_set()
+        and hotkey_listener.failure_code is None
+        and hotkey_thread.is_alive()
+    ):
+        time.sleep(0.05)
+    hotkey_status = "ready" if hotkey_listener.ready.is_set() else (
+        hotkey_listener.failure_code or "listener_stopped"
+    )
+    (output / "voice_hotkey_status.txt").write_text(f"{hotkey_status}\n", encoding="utf-8")
     try:
         while not stopping:
             command = read_text(command_url)
@@ -287,6 +338,10 @@ def control_loop(output: Path) -> int:
                     break
             time.sleep(0.1)
     finally:
+        hotkey_stop.set()
+        hotkey_listener.stop()
+        hotkey_thread.join(timeout=2)
+        (output / "voice_hotkey_status.txt").write_text("stopped\n", encoding="utf-8")
         if read_text(pid_url) == str(os.getpid()):
             pid_url.unlink(missing_ok=True)
     return 0

@@ -51,6 +51,7 @@ class ModeControllerTests(unittest.TestCase):
         controller._audio_running = lambda: False
         controller._voice_overlay_running = lambda: False
         controller._voice_control_running = lambda: False
+        controller._voice_hotkey_ready = lambda: False
         return controller
 
     def test_screenshot_mode_stops_audio_before_starting_screenshot(self):

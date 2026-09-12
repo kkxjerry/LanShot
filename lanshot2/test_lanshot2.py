@@ -31,6 +31,8 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('"voice_capture_command.txt"', source)
         self.assertIn('"capture-stop"', source)
         self.assertIn('"control-loop"', source)
+        self.assertIn("MacF24Listener", source)
+        self.assertIn('"voice_hotkey_status.txt"', source)
 
     def test_voice_overlay_shows_both_transcripts_and_menu_icon(self):
         source = (
@@ -43,6 +45,7 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('"mic.fill"', source)
         self.assertIn('bodyHeight * 0.35', source)
         self.assertIn('title: "开始采集"', source)
+        self.assertIn('"F23 停止"', source)
         self.assertIn("sharingType = .none", source)
 
     def test_build_requires_stable_development_identity(self):

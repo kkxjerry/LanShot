@@ -1,9 +1,26 @@
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent
+
+
+class FakeResponse:
+    def __init__(self, body):
+        self.body = body
+
+    def read(self, limit=-1):
+        return self.body if limit < 0 else self.body[:limit]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
 
 
 def load_audio_service():
@@ -47,6 +64,41 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('title: "开始采集"', source)
         self.assertIn('"F23 停止"', source)
         self.assertIn("sharingType = .none", source)
+
+    def test_voice_question_uses_text_only_kimi_request(self):
+        service = load_audio_service()
+        response = {"choices": [{"message": {"content": "这是回答"}}]}
+        opener = mock.Mock(return_value=FakeResponse(json.dumps(response).encode()))
+        client = service.VoiceQuestionClient("secret-key", opener=opener)
+
+        self.assertEqual(client.ask("什么是 GIL？", "直接回答"), "这是回答")
+        request = opener.call_args.args[0]
+        payload = json.loads(request.data)
+        self.assertEqual(payload["model"], "kimi-k2.7-code")
+        self.assertFalse(payload["enable_thinking"])
+        self.assertEqual(payload["messages"][1], {"role": "user", "content": "什么是 GIL？"})
+        self.assertEqual(request.headers["Authorization"], "Bearer secret-key")
+
+    def test_submitting_question_writes_answer_and_history(self):
+        service = load_audio_service()
+
+        class StubClient:
+            def ask(self, question, prompt):
+                self.question = question
+                self.prompt = prompt
+                return "最终答案"
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "audio"
+            output.mkdir()
+            (output / "interviewer.txt").write_text("请解释进程和线程", encoding="utf-8")
+            client = StubClient()
+
+            self.assertTrue(service.submit_question(output, client=client))
+            self.assertEqual((output / "answer.txt").read_text().strip(), "最终答案")
+            self.assertEqual((output / "question.txt").read_text().strip(), "请解释进程和线程")
+            self.assertEqual(client.question, "请解释进程和线程")
+            self.assertEqual(len(list((output.parent / "questions").rglob("*-answer.txt"))), 1)
 
     def test_build_requires_stable_development_identity(self):
         source = (ROOT / "build_audio.command").read_text(encoding="utf-8")

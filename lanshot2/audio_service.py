@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import os
 import signal
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
@@ -14,6 +17,9 @@ APP = ROOT / "LanShot Voice Capture.app"
 OVERLAY_APP = ROOT.parent / "capture-exclusion-demo/build/CaptureExclusionDemo.app"
 OVERLAY_EXECUTABLE = OVERLAY_APP / "Contents/MacOS/CaptureExclusionDemo"
 DEFAULT_OUTPUT = Path.home() / "Library/Application Support/LanShot2/audio"
+VOICE_PROMPT = ROOT / "voice_question_prompt.txt"
+BAILIAN_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+VOICE_MODEL = "kimi-k2.7-code"
 
 
 def read_text(path: Path) -> str:
@@ -21,6 +27,132 @@ def read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def atomic_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(value, encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def load_api_key() -> str:
+    environment_key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
+    if environment_key:
+        return environment_key
+    result = subprocess.run(
+        [
+            "/usr/bin/security",
+            "find-generic-password",
+            "-s",
+            "com.lanshot.bailian",
+            "-a",
+            "DASHSCOPE_API_KEY",
+            "-w",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    key = result.stdout.strip() if result.returncode == 0 else ""
+    if not key:
+        raise RuntimeError("未找到百炼 API Key")
+    return key
+
+
+class VoiceQuestionClient:
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        opener=urllib.request.urlopen,
+        url: str = BAILIAN_URL,
+        model: str = VOICE_MODEL,
+    ) -> None:
+        self.api_key = api_key
+        self.opener = opener
+        self.url = url
+        self.model = model
+
+    def ask(self, question: str, prompt: str) -> str:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": question},
+            ],
+            "enable_thinking": False,
+            "stream": False,
+            "max_tokens": 1600,
+        }
+        request = urllib.request.Request(
+            self.url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with self.opener(request, timeout=120) as response:
+                body = response.read(2 * 1024 * 1024)
+        except urllib.error.HTTPError as error:
+            status = error.code
+            error.close()
+            raise RuntimeError(f"百炼请求失败，HTTP {status}") from error
+        except urllib.error.URLError as error:
+            raise RuntimeError("无法连接百炼服务") from error
+        try:
+            result = json.loads(body)
+            answer = result["choices"][0]["message"]["content"]
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, IndexError, TypeError) as error:
+            raise RuntimeError("百炼返回了无效结果") from error
+        if not isinstance(answer, str) or not answer.strip():
+            raise RuntimeError("大模型没有返回答案")
+        return answer.strip().replace("```python", "").replace("```", "").strip()
+
+
+def submit_question(
+    output: Path,
+    *,
+    client: VoiceQuestionClient | None = None,
+) -> bool:
+    question = read_text(output / "interviewer.txt")
+    if not question:
+        atomic_text(output / "answer.txt", "没有识别到面试官的问题，请重新采集。\n")
+        return False
+    atomic_text(output / "question.txt", f"{question}\n")
+    atomic_text(output / "answer.txt", "正在生成答案...\n")
+    atomic_text(
+        output / "question_status.json",
+        json.dumps({"status": "requesting", "at": time.time()}, ensure_ascii=False) + "\n",
+    )
+    try:
+        prompt = VOICE_PROMPT.read_text(encoding="utf-8").strip()
+        active_client = client or VoiceQuestionClient(load_api_key())
+        answer = active_client.ask(question, prompt)
+    except (OSError, RuntimeError) as error:
+        message = f"提问失败：{error}"
+        atomic_text(output / "answer.txt", f"{message}\n")
+        atomic_text(
+            output / "question_status.json",
+            json.dumps({"status": "failed", "message": str(error), "at": time.time()}, ensure_ascii=False)
+            + "\n",
+        )
+        return False
+    atomic_text(output / "answer.txt", f"{answer}\n")
+    atomic_text(
+        output / "question_status.json",
+        json.dumps({"status": "complete", "model": VOICE_MODEL, "at": time.time()}, ensure_ascii=False)
+        + "\n",
+    )
+    history = output.parent / "questions" / time.strftime("%Y-%m-%d")
+    identifier = f"{time.strftime('%H%M%S')}-{time.time_ns()}"
+    atomic_text(history / f"{identifier}-question.txt", f"{question}\n")
+    atomic_text(history / f"{identifier}-answer.txt", f"{answer}\n")
+    return True
 
 
 def tracked_process_id(output: Path, filename: str) -> int | None:
@@ -204,6 +336,12 @@ def start(output: Path, *, ensure_controller: bool = True) -> int:
         print(f"缺少本地采集程序：{executable}", file=sys.stderr)
         return 1
     output.mkdir(parents=True, exist_ok=True)
+    atomic_text(output / "answer.txt", "正在采集问题...\n")
+    for name in ("question.txt", "question_status.json"):
+        try:
+            (output / name).unlink()
+        except FileNotFoundError:
+            pass
     for name in ("capture.log", "capture.pid"):
         try:
             (output / name).unlink()
@@ -260,10 +398,15 @@ def stop(output: Path) -> int:
 
 
 def capture_stop(output: Path) -> int:
+    was_running = process_id(output) is not None
     if not stop_capture(output):
         print("停止采集超时", file=sys.stderr)
         return 1
-    print("采集已停止，悬浮窗继续保留")
+    if was_running:
+        submit_question(output)
+        print("采集已停止，问题已提交，悬浮窗继续保留")
+    else:
+        print("当前没有正在进行的采集")
     return 0
 
 

@@ -62,7 +62,7 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('"mic.fill"', source)
         self.assertIn('bodyHeight * 0.35', source)
         self.assertIn('title: "开始采集"', source)
-        self.assertIn('"F23 停止"', source)
+        self.assertIn('"F23 结束并提问"', source)
         self.assertIn("sharingType = .none", source)
 
     def test_voice_question_uses_text_only_kimi_request(self):
@@ -92,6 +92,10 @@ class LanShot2Tests(unittest.TestCase):
             output = Path(directory) / "audio"
             output.mkdir()
             (output / "interviewer.txt").write_text("请解释进程和线程", encoding="utf-8")
+            (output / "me.txt").write_text("我的回答", encoding="utf-8")
+            (output / "interviewer.wav").write_bytes(b"interviewer-audio")
+            (output / "me.wav").write_bytes(b"microphone-audio")
+            (output / "capture_session_id.txt").write_text("session-123\n", encoding="utf-8")
             client = StubClient()
 
             self.assertTrue(service.submit_question(output, client=client))
@@ -99,6 +103,8 @@ class LanShot2Tests(unittest.TestCase):
             self.assertEqual((output / "question.txt").read_text().strip(), "请解释进程和线程")
             self.assertEqual(client.question, "请解释进程和线程")
             self.assertEqual(len(list((output.parent / "questions").rglob("*-answer.txt"))), 1)
+            self.assertEqual(len(list((output.parent / "questions").rglob("*-interviewer.wav"))), 1)
+            self.assertEqual(len(list((output.parent / "questions").rglob("*-me.wav"))), 1)
 
     def test_build_requires_stable_development_identity(self):
         source = (ROOT / "build_audio.command").read_text(encoding="utf-8")

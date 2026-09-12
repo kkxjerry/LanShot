@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import threading
@@ -121,7 +122,9 @@ def submit_question(
 ) -> bool:
     question = read_text(output / "interviewer.txt")
     if not question:
-        atomic_text(output / "answer.txt", "没有识别到面试官的问题，请重新采集。\n")
+        answer = "没有识别到面试官的问题，请重新采集。"
+        atomic_text(output / "answer.txt", f"{answer}\n")
+        archive_capture(output, question, answer)
         return False
     atomic_text(output / "question.txt", f"{question}\n")
     atomic_text(output / "answer.txt", "正在生成答案...\n")
@@ -141,6 +144,7 @@ def submit_question(
             json.dumps({"status": "failed", "message": str(error), "at": time.time()}, ensure_ascii=False)
             + "\n",
         )
+        archive_capture(output, question, message)
         return False
     atomic_text(output / "answer.txt", f"{answer}\n")
     atomic_text(
@@ -148,11 +152,26 @@ def submit_question(
         json.dumps({"status": "complete", "model": VOICE_MODEL, "at": time.time()}, ensure_ascii=False)
         + "\n",
     )
+    archive_capture(output, question, answer)
+    return True
+
+
+def archive_capture(output: Path, question: str, answer: str) -> Path:
+    configured_id = read_text(output / "capture_session_id.txt")
+    identifier = "".join(
+        character for character in configured_id if character.isalnum() or character in ("-", "_")
+    )[:80]
+    if not identifier:
+        identifier = f"{time.strftime('%H%M%S')}-{time.time_ns()}"
     history = output.parent / "questions" / time.strftime("%Y-%m-%d")
-    identifier = f"{time.strftime('%H%M%S')}-{time.time_ns()}"
+    history.mkdir(parents=True, exist_ok=True)
     atomic_text(history / f"{identifier}-question.txt", f"{question}\n")
     atomic_text(history / f"{identifier}-answer.txt", f"{answer}\n")
-    return True
+    for name in ("interviewer.wav", "me.wav", "interviewer.txt", "me.txt"):
+        source = output / name
+        if source.is_file():
+            shutil.copy2(source, history / f"{identifier}-{name}")
+    return history
 
 
 def tracked_process_id(output: Path, filename: str) -> int | None:
@@ -336,6 +355,8 @@ def start(output: Path, *, ensure_controller: bool = True) -> int:
         print(f"缺少本地采集程序：{executable}", file=sys.stderr)
         return 1
     output.mkdir(parents=True, exist_ok=True)
+    session_id = f"{time.strftime('%H%M%S')}-{time.time_ns()}"
+    atomic_text(output / "capture_session_id.txt", f"{session_id}\n")
     atomic_text(output / "answer.txt", "正在采集问题...\n")
     for name in ("question.txt", "question_status.json"):
         try:

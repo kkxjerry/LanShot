@@ -305,10 +305,10 @@ final class LatestAnswerMonitor {
                 startTime,
                 elapsed / 60,
                 elapsed % 60,
-                hotkeyReady ? "F23 停止" : "按钮停止"
+                hotkeyReady ? "F23 结束并提问" : "按钮结束并提问"
             )
         case "starting":
-            return hotkeyReady ? "正在启动采集... | F23 停止" : "正在启动采集..."
+            return hotkeyReady ? "正在启动采集... | F23 结束并提问" : "正在启动采集..."
         case "stopping":
             return "正在停止采集..."
         case let value where value.hasPrefix("failed:"):
@@ -740,7 +740,7 @@ final class VoicePanelContentView: NSView {
         let gap: CGFloat = 12
         let titleHeight: CGFloat = 22
         let headerHeight: CGFloat = 30
-        let buttonWidth: CGFloat = 104
+        let buttonWidth: CGFloat = 144
         let contentWidth = max(0, bounds.width - inset * 2)
         let headerY = max(inset, bounds.height - inset - headerHeight)
         statusLabel.frame = NSRect(
@@ -809,7 +809,7 @@ final class VoicePanelContentView: NSView {
         statusLabel.stringValue = snapshot.status
         statusLabel.textColor = (snapshot.isCapturing ? NSColor.systemGreen : textColor)
             .withAlphaComponent(max(textOpacity, 0.55))
-        toggleButton.title = snapshot.isCapturing ? "停止采集" : "开始采集"
+        toggleButton.title = snapshot.isCapturing ? "结束本轮并提问" : "开始采集"
         systemTextView.string = snapshot.interviewer
         microphoneTextView.string = snapshot.me
         answerTextView.string = snapshot.answer
@@ -1242,7 +1242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateVoiceStatus(_ snapshot: VoiceOverlaySnapshot) {
-        captureToggleItem?.title = snapshot.isCapturing ? "停止采集" : "开始采集"
+        captureToggleItem?.title = snapshot.isCapturing ? "结束本轮并提问" : "开始采集"
         let symbolName = snapshot.isCapturing ? "mic.fill" : "mic.slash.fill"
         let icon = NSImage(systemSymbolName: symbolName, accessibilityDescription: "LanShot")
         icon?.isTemplate = true

@@ -8,6 +8,8 @@
 
 - 系统音频实时写入 `interviewer.txt`，原始音频写入 `interviewer.wav`。
 - 麦克风实时写入 `me.txt`，原始音频写入 `me.wav`。
+- 菜单栏显示麦克风图标；悬浮字幕实时显示“面试官”和“我”两路文字。
+- 悬浮字幕沿用 LanShot 的 `sharingType = .none` 窗口，不进入 macOS 系统截图。
 - 两路使用相互独立的百炼 `qwen-audio-3.0-asr-flash-streaming` 连接，不混流。
 - 暂不包含 RAG、Skill、声纹识别、语音问题提交或 TTS。
 
@@ -25,4 +27,4 @@
 ./lanshot2/stop_lanshot2.command
 ```
 
-程序不会自行开始监听。只有用户执行启动命令后才会申请权限并采集；执行停止命令后结束采集并写完文件。API Key 从环境变量或 macOS 钥匙串读取，不写入项目和日志。
+程序不会自行开始监听。只有用户执行启动命令后才会申请权限并采集；执行停止命令后结束采集、关闭悬浮字幕并写完文件。API Key 从环境变量或 macOS 钥匙串读取，不写入项目和日志。

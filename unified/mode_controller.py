@@ -18,6 +18,10 @@ MANAGER = ROOT / "screenshot-sender" / "manage_services.py"
 AUDIO_SERVICE = ROOT / "lanshot2" / "audio_service.py"
 AUDIO_BUILD = ROOT / "lanshot2" / "build_audio.command"
 AUDIO_EXECUTABLE = ROOT / "lanshot2" / "LanShot Voice Capture.app/Contents/MacOS/native_audio_capture"
+OVERLAY_BUILD = ROOT / "capture-exclusion-demo" / "build.sh"
+OVERLAY_EXECUTABLE = (
+    ROOT / "capture-exclusion-demo/build/CaptureExclusionDemo.app/Contents/MacOS/CaptureExclusionDemo"
+)
 DEFAULT_SETTINGS = Path.home() / "Library/Application Support/LanShotP1R2Live/settings.json"
 DEFAULT_STATE_DIR = Path.home() / "Library/Application Support/LanShotUnified"
 
@@ -79,6 +83,15 @@ class ModeController:
         except (OSError, ValueError):
             return False
 
+    def _voice_overlay_running(self) -> bool:
+        pid_file = Path.home() / "Library/Application Support/LanShot2/audio/voice_overlay.pid"
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)
+            return True
+        except (OSError, ValueError):
+            return False
+
     def _screenshot_running(self) -> bool:
         result = self._run([
             "/usr/bin/pgrep", "-f",
@@ -112,7 +125,9 @@ class ModeController:
 
         if mode == "screenshot":
             self._stop_audio()
-            if not self._wait_stopped(self._audio_running):
+            if not self._wait_stopped(
+                lambda: self._audio_running() or self._voice_overlay_running()
+            ):
                 self._write_state("stopped", "failed", "语音模式未能停止")
                 raise ModeError("语音模式未能停止，拒绝同时启动截屏模式")
             result = self._run([
@@ -138,6 +153,11 @@ class ModeController:
             if build.returncode != 0:
                 self._write_state("stopped", "failed", "语音辅助程序构建失败")
                 raise ModeError((build.stderr or build.stdout or "语音辅助程序构建失败").strip())
+        if not OVERLAY_EXECUTABLE.is_file():
+            build = self._run([str(OVERLAY_BUILD)], timeout=90)
+            if build.returncode != 0:
+                self._write_state("stopped", "failed", "语音悬浮窗构建失败")
+                raise ModeError((build.stderr or build.stdout or "语音悬浮窗构建失败").strip())
         result = self._run([sys.executable, str(AUDIO_SERVICE), "start"], timeout=40)
         if result.returncode != 0:
             self._write_state("stopped", "failed", "语音模式启动失败")
@@ -148,10 +168,11 @@ class ModeController:
     def stop(self) -> dict:
         audio = self._stop_audio()
         screenshot = self._stop_screenshot()
-        self._wait_stopped(self._audio_running)
+        self._wait_stopped(lambda: self._audio_running() or self._voice_overlay_running())
         self._wait_stopped(self._screenshot_running)
         remaining = {
             "voice": self._audio_running(),
+            "voice_overlay": self._voice_overlay_running(),
             "screenshot": self._screenshot_running(),
         }
         status = "stopped" if not any(remaining.values()) else "degraded"
@@ -166,11 +187,14 @@ class ModeController:
 
     def status(self) -> dict:
         voice = self._audio_running()
+        voice_overlay = self._voice_overlay_running()
         screenshot = self._screenshot_running()
-        if voice and screenshot:
+        if (voice or voice_overlay) and screenshot:
             mode, status = "conflict", "degraded"
         elif voice:
-            mode, status = "voice", "running"
+            mode, status = "voice", "running" if voice_overlay else "degraded"
+        elif voice_overlay:
+            mode, status = "voice", "degraded"
         elif screenshot:
             mode, status = "screenshot", "running"
         else:
@@ -179,6 +203,7 @@ class ModeController:
             "mode": mode,
             "status": status,
             "voice_running": voice,
+            "voice_overlay_running": voice_overlay,
             "screenshot_running": screenshot,
             "godhands_running": self._godhands_running(),
             "audio_directory": str(Path.home() / "Library/Application Support/LanShot2/audio"),

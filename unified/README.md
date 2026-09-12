@@ -14,7 +14,8 @@ LanShot 与 LanShot2 已通过统一控制器合并。两种模式互斥，切�
 
 - 只启动系统音频和麦克风双路实时ASR。
 - 两路都使用 `qwen-audio-3.0-asr-flash-streaming`。
-- 不启动截图快捷键和截图悬浮窗。
+- 不启动截图快捷键；启动同款不可捕获悬浮窗，实时显示两路文字。
+- 菜单栏使用麦克风图标标识语音模式，可显隐或居中字幕。
 - 文字与音频保存在 `~/Library/Application Support/LanShot2/audio/`。
 
 ## 使用

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mode_controller import AUDIO_EXECUTABLE, ModeController, ModeError
+from mode_controller import AUDIO_EXECUTABLE, OVERLAY_EXECUTABLE, ModeController, ModeError
 
 
 class FakeRunner:
@@ -34,11 +34,23 @@ class ModeControllerTests(unittest.TestCase):
             AUDIO_EXECUTABLE.parts[-4:],
             ("LanShot Voice Capture.app", "Contents", "MacOS", "native_audio_capture"),
         )
+        self.assertEqual(
+            OVERLAY_EXECUTABLE.parts[-4:],
+            ("CaptureExclusionDemo.app", "Contents", "MacOS", "CaptureExclusionDemo"),
+        )
 
     def controller(self, directory, runner):
         settings = Path(directory) / "settings.json"
         settings.write_text("{}", encoding="utf-8")
-        return ModeController(settings, Path(directory) / "state", runner=runner, sleeper=lambda _: None)
+        controller = ModeController(
+            settings,
+            Path(directory) / "state",
+            runner=runner,
+            sleeper=lambda _: None,
+        )
+        controller._audio_running = lambda: False
+        controller._voice_overlay_running = lambda: False
+        return controller
 
     def test_screenshot_mode_stops_audio_before_starting_screenshot(self):
         with tempfile.TemporaryDirectory() as directory:

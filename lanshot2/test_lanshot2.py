@@ -18,11 +18,25 @@ class LanShot2Tests(unittest.TestCase):
     def test_uses_separate_runtime_and_app(self):
         service = load_audio_service()
         self.assertEqual(service.APP.name, "LanShot Voice Capture.app")
+        self.assertEqual(service.OVERLAY_APP.name, "CaptureExclusionDemo.app")
         self.assertEqual(service.DEFAULT_OUTPUT.parts[-2:], ("LanShot2", "audio"))
 
     def test_background_capture_uses_app_identity(self):
         source = (ROOT / "audio_service.py").read_text(encoding="utf-8")
         self.assertIn('["open", "-n"', source)
+        self.assertIn('"--lanshot-voice-dir"', source)
+        self.assertIn('"voice_overlay.pid"', source)
+        self.assertIn('"voice_overlay_command.txt"', source)
+
+    def test_voice_overlay_shows_both_transcripts_and_menu_icon(self):
+        source = (
+            ROOT.parent / "capture-exclusion-demo/CaptureExclusionDemo.swift"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"--lanshot-voice-dir"', source)
+        self.assertIn('appendingPathComponent("interviewer.txt")', source)
+        self.assertIn('appendingPathComponent("me.txt")', source)
+        self.assertIn('"mic.fill"', source)
+        self.assertIn("sharingType = .none", source)
 
     def test_build_requires_stable_development_identity(self):
         source = (ROOT / "build_audio.command").read_text(encoding="utf-8")

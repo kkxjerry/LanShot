@@ -110,6 +110,7 @@ private extension Double {
 @MainActor
 final class LatestAnswerMonitor {
     private let url: URL
+    private let secondaryURL: URL?
     private let pageCommandURL: URL
     private let stateURL: URL?
     private let displayDirectory: URL
@@ -118,6 +119,7 @@ final class LatestAnswerMonitor {
     private var lastAnswer: String?
     private var lastPageCommand: String?
     private var pageCommandInitialized = false
+    let isVoiceMode: Bool
     var onChange: ((String) -> Void)?
     var onPageDown: (() -> Void)?
     var onPageUp: (() -> Void)?
@@ -126,6 +128,20 @@ final class LatestAnswerMonitor {
 
     init(url: URL? = nil, pageCommandURL: URL? = nil) {
         let arguments = ProcessInfo.processInfo.arguments
+        let voiceIndex = arguments.firstIndex(of: "--lanshot-voice-dir")
+        let voiceDirectory = voiceIndex.flatMap {
+            $0 + 1 < arguments.count ? URL(fileURLWithPath: arguments[$0 + 1], isDirectory: true) : nil
+        }
+        if let voiceDirectory {
+            self.displayDirectory = voiceDirectory
+            self.url = url ?? voiceDirectory.appendingPathComponent("interviewer.txt")
+            self.secondaryURL = voiceDirectory.appendingPathComponent("me.txt")
+            self.pageCommandURL = pageCommandURL
+                ?? voiceDirectory.appendingPathComponent("voice_overlay_command.txt")
+            self.stateURL = nil
+            self.isVoiceMode = true
+            return
+        }
         let index = arguments.firstIndex(of: "--lanshot-display-dir")
         let configured: String? = index.flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
             ?? ProcessInfo.processInfo.environment["LANSHOT_DISPLAY_DIR"]
@@ -133,8 +149,10 @@ final class LatestAnswerMonitor {
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/lanshot-receiver")
         self.displayDirectory = dataDirectory
         self.url = url ?? dataDirectory.appendingPathComponent("latest.txt")
+        self.secondaryURL = nil
         self.pageCommandURL = pageCommandURL ?? dataDirectory.appendingPathComponent("page.txt")
         self.stateURL = configured == nil ? nil : dataDirectory.appendingPathComponent("latest_state.json")
+        self.isVoiceMode = false
     }
 
     func requestCapture() {
@@ -155,6 +173,17 @@ final class LatestAnswerMonitor {
     }
 
     func start() {
+        if isVoiceMode {
+            try? "\(ProcessInfo.processInfo.processIdentifier)\n".write(
+                to: displayDirectory.appendingPathComponent("voice_overlay.pid"),
+                atomically: true,
+                encoding: .utf8
+            )
+            writeJSON(
+                ["status": "running", "at": Date().timeIntervalSince1970],
+                name: "voice_overlay_status.json"
+            )
+        }
         reloadAnswer()
         lastPageCommand = readText(from: pageCommandURL)
         pageCommandInitialized = true
@@ -171,12 +200,24 @@ final class LatestAnswerMonitor {
     func stop() {
         timer?.invalidate()
         timer = nil
-        if stateURL != nil {
+        if isVoiceMode {
+            try? FileManager.default.removeItem(
+                at: displayDirectory.appendingPathComponent("voice_overlay.pid")
+            )
+            writeJSON(
+                ["status": "stopped", "at": Date().timeIntervalSince1970],
+                name: "voice_overlay_status.json"
+            )
+        } else if stateURL != nil {
             writeJSON(["status": "stopped", "at": Date().timeIntervalSince1970], name: "overlay_status.json")
         }
     }
 
     private func reloadAnswer() {
+        if isVoiceMode {
+            reloadVoiceTranscript()
+            return
+        }
         if let stateURL = stateURL {
             reloadVersionedState(stateURL)
             return
@@ -187,6 +228,22 @@ final class LatestAnswerMonitor {
             answer != lastAnswer
         else { return }
 
+        lastAnswer = answer
+        onChange?(answer)
+    }
+
+    private func reloadVoiceTranscript() {
+        let interviewer = readText(from: url)
+        let me = secondaryURL.flatMap(readText)
+        var sections: [String] = []
+        if let interviewer {
+            sections.append("面试官\n\(interviewer)")
+        }
+        if let me {
+            sections.append("我\n\(me)")
+        }
+        let answer = sections.isEmpty ? "正在监听语音..." : sections.joined(separator: "\n\n")
+        guard answer != lastAnswer else { return }
         lastAnswer = answer
         onChange?(answer)
     }
@@ -235,7 +292,7 @@ final class LatestAnswerMonitor {
             onToggleVisibility?()
         } else if command?.hasPrefix("down ") == true {
             onPageDown?()
-        } else if stateURL != nil && command?.hasPrefix("quit ") == true {
+        } else if (stateURL != nil || isVoiceMode) && command?.hasPrefix("quit ") == true {
             NSApp.terminate(nil)
         }
     }
@@ -254,10 +311,12 @@ final class LatestAnswerMonitor {
 @MainActor
 final class FloatingPanel: NSPanel {
     private let preferences: OverlayPreferences
+    private let followLatest: Bool
     private var answer = "等待 AI 回答..."
 
-    init(preferences: OverlayPreferences) {
+    init(preferences: OverlayPreferences, followLatest: Bool = false) {
         self.preferences = preferences
+        self.followLatest = followLatest
         let panelSize = NSSize(width: preferences.width, height: preferences.height)
         super.init(
             contentRect: NSRect(origin: .zero, size: panelSize),
@@ -290,7 +349,8 @@ final class FloatingPanel: NSPanel {
         contentView = PanelContentView(
             frame: NSRect(origin: .zero, size: size),
             preferences: preferences,
-            answer: answer
+            answer: answer,
+            followLatest: followLatest
         )
     }
 
@@ -342,13 +402,20 @@ final class FloatingPanel: NSPanel {
 
 @MainActor
 final class PanelContentView: NSView {
+    private let followLatest: Bool
     private var hoverTrackingArea: NSTrackingArea?
     private var baseTextColor = NSColor.black
     private var baseTextOpacity: CGFloat = 1
     private weak var answerTextView: NSTextView?
     private weak var answerScrollView: NSScrollView?
 
-    init(frame frameRect: NSRect, preferences: OverlayPreferences, answer: String) {
+    init(
+        frame frameRect: NSRect,
+        preferences: OverlayPreferences,
+        answer: String,
+        followLatest: Bool
+    ) {
+        self.followLatest = followLatest
         super.init(frame: frameRect)
 
         wantsLayer = true
@@ -439,7 +506,11 @@ final class PanelContentView: NSView {
 
     func updateAnswer(_ answer: String) {
         answerTextView?.string = answer
-        answerTextView?.scrollToBeginningOfDocument(nil)
+        if followLatest {
+            answerTextView?.scrollToEndOfDocument(nil)
+        } else {
+            answerTextView?.scrollToBeginningOfDocument(nil)
+        }
     }
 
     func pageDown() {
@@ -765,7 +836,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let panel = FloatingPanel(preferences: preferences)
+        let panel = FloatingPanel(
+            preferences: preferences,
+            followLatest: answerMonitor.isVoiceMode
+        )
         self.panel = panel
         preferences.onChange = { [weak self] in
             self?.panel?.applyPreferences()
@@ -785,27 +859,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         answerMonitor.onToggleVisibility = { [weak self] in
             self?.panel?.toggleVisibility()
         }
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "LanShot"
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        let symbolName = answerMonitor.isVoiceMode ? "mic.fill" : "camera.viewfinder"
+        let icon = NSImage(systemSymbolName: symbolName, accessibilityDescription: "LanShot")
+        icon?.isTemplate = true
+        item.button?.image = icon
+        item.button?.toolTip = answerMonitor.isVoiceMode ? "LanShot 语音模式" : "LanShot 截屏模式"
         let menu = NSMenu()
-        let captureItem = NSMenuItem(title: "截图并分析", action: #selector(manualCapture), keyEquivalent: "")
-        captureItem.target = self
-        menu.addItem(captureItem)
+        if answerMonitor.isVoiceMode {
+            let toggleItem = NSMenuItem(
+                title: "显示或隐藏字幕",
+                action: #selector(togglePanel),
+                keyEquivalent: ""
+            )
+            toggleItem.target = self
+            menu.addItem(toggleItem)
+            let centerItem = NSMenuItem(
+                title: "字幕移到屏幕上方",
+                action: #selector(centerPanel),
+                keyEquivalent: ""
+            )
+            centerItem.target = self
+            menu.addItem(centerItem)
+        } else {
+            let captureItem = NSMenuItem(
+                title: "截图并分析",
+                action: #selector(manualCapture),
+                keyEquivalent: ""
+            )
+            captureItem.target = self
+            menu.addItem(captureItem)
+        }
         let settingsItem = NSMenuItem(title: "显示设置", action: #selector(openSettingsMenu), keyEquivalent: "")
         settingsItem.target = self
         menu.addItem(settingsItem)
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "退出显示", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
+        let quitTitle = answerMonitor.isVoiceMode ? "退出语音显示" : "退出显示"
+        menu.addItem(NSMenuItem(title: quitTitle, action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
         item.menu = menu
         statusItem = item
         answerMonitor.start()
         panel.orderFrontRegardless()
-        DispatchQueue.main.async { [weak self] in
-            self?.showSettings()
+        if !answerMonitor.isVoiceMode {
+            DispatchQueue.main.async { [weak self] in
+                self?.showSettings()
+            }
         }
     }
 
     @objc private func manualCapture() { answerMonitor.requestCapture() }
+    @objc private func togglePanel() { panel?.toggleVisibility() }
+    @objc private func centerPanel() { panel?.centerNearTop() }
     @objc private func openSettingsMenu() { showSettings() }
 
     func showSettings() {

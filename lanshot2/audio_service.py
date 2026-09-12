@@ -10,6 +10,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from pathlib import Path
 
 
@@ -76,13 +77,15 @@ class VoiceQuestionClient:
         self.url = url
         self.model = model
 
-    def ask(self, question: str, prompt: str) -> str:
+    def ask(self, question: str, prompt: str, history: list[dict] | None = None) -> str:
+        messages = [{"role": "system", "content": prompt}]
+        for item in history or []:
+            messages.append({"role": "user", "content": item["input"]})
+            messages.append({"role": "assistant", "content": item["answer"]})
+        messages.append({"role": "user", "content": question})
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": question},
-            ],
+            "messages": messages,
             "enable_thinking": False,
             "stream": False,
             "max_tokens": 1600,
@@ -115,14 +118,64 @@ class VoiceQuestionClient:
         return answer.strip().replace("```python", "").replace("```", "").strip()
 
 
+def combined_transcript(system_text: str, microphone_text: str) -> str:
+    return (
+        "系统声音识别：\n"
+        f"{system_text or '（未识别到内容）'}\n\n"
+        "麦克风识别：\n"
+        f"{microphone_text or '（未识别到内容）'}"
+    )
+
+
+def load_question_history(output: Path, limit: int = 6) -> list[dict]:
+    history_file = output.parent / "conversation_history.jsonl"
+    items: deque[dict] = deque(maxlen=limit)
+    try:
+        with history_file.open("r", encoding="utf-8") as stream:
+            for line in stream:
+                if len(line) > 64 * 1024:
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    isinstance(item, dict)
+                    and isinstance(item.get("input"), str)
+                    and isinstance(item.get("answer"), str)
+                ):
+                    items.append(item)
+    except OSError:
+        pass
+    return list(items)
+
+
+def append_question_history(output: Path, question: str, answer: str) -> None:
+    history_file = output.parent / "conversation_history.jsonl"
+    history_file.parent.mkdir(parents=True, exist_ok=True)
+    item = {
+        "session_id": read_text(output / "capture_session_id.txt"),
+        "at": time.time(),
+        "input": question,
+        "answer": answer,
+    }
+    with history_file.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(item, ensure_ascii=False) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chmod(history_file, 0o600)
+
+
 def submit_question(
     output: Path,
     *,
     client: VoiceQuestionClient | None = None,
 ) -> bool:
-    question = read_text(output / "interviewer.txt")
-    if not question:
-        answer = "没有识别到面试官的问题，请重新采集。"
+    system_text = read_text(output / "interviewer.txt")
+    microphone_text = read_text(output / "me.txt")
+    question = combined_transcript(system_text, microphone_text)
+    if not system_text and not microphone_text:
+        answer = "两路都没有识别到文字，请重新采集。"
         atomic_text(output / "answer.txt", f"{answer}\n")
         archive_capture(output, question, answer)
         return False
@@ -135,7 +188,7 @@ def submit_question(
     try:
         prompt = VOICE_PROMPT.read_text(encoding="utf-8").strip()
         active_client = client or VoiceQuestionClient(load_api_key())
-        answer = active_client.ask(question, prompt)
+        answer = active_client.ask(question, prompt, history=load_question_history(output))
     except (OSError, RuntimeError) as error:
         message = f"提问失败：{error}"
         atomic_text(output / "answer.txt", f"{message}\n")
@@ -152,6 +205,7 @@ def submit_question(
         json.dumps({"status": "complete", "model": VOICE_MODEL, "at": time.time()}, ensure_ascii=False)
         + "\n",
     )
+    append_question_history(output, question, answer)
     archive_capture(output, question, answer)
     return True
 
@@ -171,7 +225,24 @@ def archive_capture(output: Path, question: str, answer: str) -> Path:
         source = output / name
         if source.is_file():
             shutil.copy2(source, history / f"{identifier}-{name}")
+    atomic_text(output / "last_archived_session_id.txt", f"{configured_id}\n")
     return history
+
+
+def archive_pending_capture(output: Path) -> None:
+    session_id = read_text(output / "capture_session_id.txt")
+    if not session_id or session_id == read_text(output / "last_archived_session_id.txt"):
+        return
+    if not any((output / name).is_file() for name in ("interviewer.wav", "me.wav")):
+        return
+    archive_capture(
+        output,
+        combined_transcript(
+            read_text(output / "interviewer.txt"),
+            read_text(output / "me.txt"),
+        ),
+        read_text(output / "answer.txt") or "本轮因中断保存，尚未生成答案。",
+    )
 
 
 def tracked_process_id(output: Path, filename: str) -> int | None:
@@ -197,7 +268,7 @@ def control_process_id(output: Path) -> int | None:
 
 
 def write_capture_command(output: Path, action: str) -> None:
-    if action not in ("start", "stop", "quit"):
+    if action not in ("start", "stop", "submit", "quit"):
         raise ValueError("unsupported capture command")
     command = output / "voice_capture_command.txt"
     temporary = command.with_suffix(".tmp")
@@ -355,14 +426,11 @@ def start(output: Path, *, ensure_controller: bool = True) -> int:
         print(f"缺少本地采集程序：{executable}", file=sys.stderr)
         return 1
     output.mkdir(parents=True, exist_ok=True)
+    archive_pending_capture(output)
     session_id = f"{time.strftime('%H%M%S')}-{time.time_ns()}"
     atomic_text(output / "capture_session_id.txt", f"{session_id}\n")
-    atomic_text(output / "answer.txt", "正在采集问题...\n")
-    for name in ("question.txt", "question_status.json"):
-        try:
-            (output / name).unlink()
-        except FileNotFoundError:
-            pass
+    if not (output / "answer.txt").is_file():
+        atomic_text(output / "answer.txt", "等待发送问题...\n")
     for name in ("capture.log", "capture.pid"):
         try:
             (output / name).unlink()
@@ -408,12 +476,23 @@ def start(output: Path, *, ensure_controller: bool = True) -> int:
 
 
 def stop(output: Path) -> int:
+    was_running = process_id(output) is not None
     control_stopped = stop_control(output)
     audio_stopped = stop_capture(output)
     overlay_stopped = stop_overlay(output)
     if not control_stopped or not audio_stopped or not overlay_stopped:
         print("停止超时", file=sys.stderr)
         return 1
+    if was_running:
+        archive_capture(
+            output,
+            combined_transcript(
+                read_text(output / "interviewer.txt"),
+                read_text(output / "me.txt"),
+            ),
+            "程序退出前已保存，本轮未提交。",
+        )
+    archive_pending_capture(output)
     print("音频采集和语音悬浮窗已停止，文件已写完")
     return 0
 
@@ -424,11 +503,30 @@ def capture_stop(output: Path) -> int:
         print("停止采集超时", file=sys.stderr)
         return 1
     if was_running:
-        submit_question(output)
-        print("采集已停止，问题已提交，悬浮窗继续保留")
+        message = "本轮采集已停止并保存，按 F23 可以发送问题。"
+        archive_capture(
+            output,
+            combined_transcript(
+                read_text(output / "interviewer.txt"),
+                read_text(output / "me.txt"),
+            ),
+            message,
+        )
+        print("采集已停止并保存，未提交问题，悬浮窗继续保留")
     else:
         print("当前没有正在进行的采集")
     return 0
+
+
+def capture_submit(output: Path) -> int:
+    if process_id(output) and not stop_capture(output):
+        print("停止识别超时，拒绝发送不完整问题", file=sys.stderr)
+        return 1
+    atomic_text(output / "capture.log", "submitting\n")
+    submitted = submit_question(output)
+    atomic_text(output / "capture.log", "stopped\n")
+    print("问题已发送，历史已保存，悬浮窗继续运行")
+    return 0 if submitted else 1
 
 
 def control_loop(output: Path) -> int:
@@ -444,12 +542,11 @@ def control_loop(output: Path) -> int:
 
     hotkey_listener = MacF24Listener()
 
-    def toggle_capture() -> None:
-        state = read_text(output / "capture.log")
-        action = "stop" if state in ("running", "starting") else "start"
-        requested_state = "stopping" if action == "stop" else "starting"
-        (output / "capture.log").write_text(f"{requested_state}\n", encoding="utf-8")
-        write_capture_command(output, action)
+    def submit_capture() -> None:
+        if read_text(output / "capture.log") in ("submitting", "stopping"):
+            return
+        atomic_text(output / "capture.log", "submitting\n")
+        write_capture_command(output, "submit")
 
     def ignore_hotkey() -> None:
         return
@@ -467,7 +564,7 @@ def control_loop(output: Path) -> int:
         args=(
             hotkey_stop,
             ignore_hotkey,
-            toggle_capture,
+            submit_capture,
             ignore_hotkey,
             ignore_hotkey,
             ignore_hotkey,
@@ -498,6 +595,8 @@ def control_loop(output: Path) -> int:
                     start(output, ensure_controller=False)
                 elif action == "stop":
                     capture_stop(output)
+                elif action == "submit":
+                    capture_submit(output)
                 elif action == "quit":
                     break
             time.sleep(0.1)
@@ -528,7 +627,15 @@ def status(output: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="LanShot2 双路实时音频采集和语音识别")
-    commands = ("prepare", "start", "capture-stop", "stop", "status", "control-loop")
+    commands = (
+        "prepare",
+        "start",
+        "capture-stop",
+        "capture-submit",
+        "stop",
+        "status",
+        "control-loop",
+    )
     parser.add_argument("command", choices=commands)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
@@ -536,6 +643,7 @@ def main() -> int:
         "prepare": prepare,
         "start": start,
         "capture-stop": capture_stop,
+        "capture-submit": capture_submit,
         "stop": stop,
         "status": status,
         "control-loop": control_loop,

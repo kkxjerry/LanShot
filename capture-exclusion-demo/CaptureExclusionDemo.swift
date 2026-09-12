@@ -177,6 +177,7 @@ final class LatestAnswerMonitor {
     func toggleVoiceCapture() {
         guard isVoiceMode else { return }
         let state = readText(from: displayDirectory.appendingPathComponent("capture.log"))
+        guard state != "submitting" && state != "stopping" else { return }
         let command = state == "running" || state == "starting" ? "stop" : "start"
         let requestedState = command == "start" ? "starting\n" : "stopping\n"
         try? requestedState.write(
@@ -185,6 +186,22 @@ final class LatestAnswerMonitor {
             encoding: .utf8
         )
         try? "\(command) \(UUID().uuidString.lowercased())\n".write(
+            to: displayDirectory.appendingPathComponent("voice_capture_command.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    func submitVoiceQuestion() {
+        guard isVoiceMode else { return }
+        let state = readText(from: displayDirectory.appendingPathComponent("capture.log"))
+        guard state != "submitting" && state != "stopping" else { return }
+        try? "submitting\n".write(
+            to: displayDirectory.appendingPathComponent("capture.log"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try? "submit \(UUID().uuidString.lowercased())\n".write(
             to: displayDirectory.appendingPathComponent("voice_capture_command.txt"),
             atomically: true,
             encoding: .utf8
@@ -283,7 +300,7 @@ final class LatestAnswerMonitor {
         let hotkeyReady = readText(
             from: displayDirectory.appendingPathComponent("voice_hotkey_status.txt")
         ) == "ready"
-        let startHint = hotkeyReady ? "点击开始采集或按 F23" : "点击开始采集"
+        let submitHint = hotkeyReady ? "F23 发送问题" : "菜单发送问题"
         switch state {
         case "running":
             let pidURL = displayDirectory.appendingPathComponent("capture.pid")
@@ -305,16 +322,18 @@ final class LatestAnswerMonitor {
                 startTime,
                 elapsed / 60,
                 elapsed % 60,
-                hotkeyReady ? "F23 结束并提问" : "按钮结束并提问"
+                submitHint
             )
         case "starting":
-            return hotkeyReady ? "正在启动采集... | F23 结束并提问" : "正在启动采集..."
+            return "正在启动采集... | \(submitHint)"
         case "stopping":
-            return "正在停止采集..."
+            return "正在停止并保存本轮..."
+        case "submitting":
+            return "正在停止识别并发送问题..."
         case let value where value.hasPrefix("failed:"):
-            return "采集失败 | \(startHint)"
+            return "采集失败 | 点击开始采集"
         default:
-            return "尚未采集 | \(startHint)"
+            return "尚未采集 | 点击开始采集 | \(submitHint)"
         }
     }
 
@@ -809,7 +828,7 @@ final class VoicePanelContentView: NSView {
         statusLabel.stringValue = snapshot.status
         statusLabel.textColor = (snapshot.isCapturing ? NSColor.systemGreen : textColor)
             .withAlphaComponent(max(textOpacity, 0.55))
-        toggleButton.title = snapshot.isCapturing ? "结束本轮并提问" : "开始采集"
+        toggleButton.title = snapshot.isCapturing ? "停止采集" : "开始采集"
         systemTextView.string = snapshot.interviewer
         microphoneTextView.string = snapshot.me
         answerTextView.string = snapshot.answer
@@ -1181,6 +1200,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             captureItem.target = self
             menu.addItem(captureItem)
             captureToggleItem = captureItem
+            let submitItem = NSMenuItem(
+                title: "发送问题（F23）",
+                action: #selector(submitVoiceQuestion),
+                keyEquivalent: ""
+            )
+            submitItem.target = self
+            menu.addItem(submitItem)
             menu.addItem(NSMenuItem.separator())
             let toggleItem = NSMenuItem(
                 title: "显示或隐藏字幕",
@@ -1224,6 +1250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func manualCapture() { answerMonitor.requestCapture() }
     @objc private func toggleVoiceCapture() { answerMonitor.toggleVoiceCapture() }
+    @objc private func submitVoiceQuestion() { answerMonitor.submitVoiceQuestion() }
     @objc private func togglePanel() { panel?.toggleVisibility() }
     @objc private func centerPanel() { panel?.centerNearTop() }
     @objc private func openSettingsMenu() { showSettings() }
@@ -1242,7 +1269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateVoiceStatus(_ snapshot: VoiceOverlaySnapshot) {
-        captureToggleItem?.title = snapshot.isCapturing ? "结束本轮并提问" : "开始采集"
+        captureToggleItem?.title = snapshot.isCapturing ? "停止采集" : "开始采集"
         let symbolName = snapshot.isCapturing ? "mic.fill" : "mic.slash.fill"
         let icon = NSImage(systemSymbolName: symbolName, accessibilityDescription: "LanShot")
         icon?.isTemplate = true

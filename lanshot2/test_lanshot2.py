@@ -47,9 +47,11 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('"voice_overlay_command.txt"', source)
         self.assertIn('"voice_capture_command.txt"', source)
         self.assertIn('"capture-stop"', source)
+        self.assertIn('"capture-submit"', source)
         self.assertIn('"control-loop"', source)
         self.assertIn("MacF24Listener", source)
         self.assertIn('"voice_hotkey_status.txt"', source)
+        self.assertIn('write_capture_command(output, "submit")', source)
 
     def test_voice_overlay_shows_both_transcripts_and_menu_icon(self):
         source = (
@@ -62,7 +64,8 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('"mic.fill"', source)
         self.assertIn('bodyHeight * 0.35', source)
         self.assertIn('title: "开始采集"', source)
-        self.assertIn('"F23 结束并提问"', source)
+        self.assertIn('"F23 发送问题"', source)
+        self.assertIn('title: "发送问题（F23）"', source)
         self.assertIn("sharingType = .none", source)
 
     def test_voice_question_uses_text_only_kimi_request(self):
@@ -71,21 +74,31 @@ class LanShot2Tests(unittest.TestCase):
         opener = mock.Mock(return_value=FakeResponse(json.dumps(response).encode()))
         client = service.VoiceQuestionClient("secret-key", opener=opener)
 
-        self.assertEqual(client.ask("什么是 GIL？", "直接回答"), "这是回答")
+        self.assertEqual(
+            client.ask(
+                "什么是 GIL？",
+                "直接回答",
+                history=[{"input": "上一题", "answer": "上一题答案"}],
+            ),
+            "这是回答",
+        )
         request = opener.call_args.args[0]
         payload = json.loads(request.data)
         self.assertEqual(payload["model"], "kimi-k2.7-code")
         self.assertFalse(payload["enable_thinking"])
-        self.assertEqual(payload["messages"][1], {"role": "user", "content": "什么是 GIL？"})
+        self.assertEqual(payload["messages"][1], {"role": "user", "content": "上一题"})
+        self.assertEqual(payload["messages"][2], {"role": "assistant", "content": "上一题答案"})
+        self.assertEqual(payload["messages"][3], {"role": "user", "content": "什么是 GIL？"})
         self.assertEqual(request.headers["Authorization"], "Bearer secret-key")
 
     def test_submitting_question_writes_answer_and_history(self):
         service = load_audio_service()
 
         class StubClient:
-            def ask(self, question, prompt):
+            def ask(self, question, prompt, history=None):
                 self.question = question
                 self.prompt = prompt
+                self.history = history
                 return "最终答案"
 
         with tempfile.TemporaryDirectory() as directory:
@@ -100,11 +113,47 @@ class LanShot2Tests(unittest.TestCase):
 
             self.assertTrue(service.submit_question(output, client=client))
             self.assertEqual((output / "answer.txt").read_text().strip(), "最终答案")
-            self.assertEqual((output / "question.txt").read_text().strip(), "请解释进程和线程")
-            self.assertEqual(client.question, "请解释进程和线程")
+            saved_question = (output / "question.txt").read_text().strip()
+            self.assertIn("系统声音识别：\n请解释进程和线程", saved_question)
+            self.assertIn("麦克风识别：\n我的回答", saved_question)
+            self.assertIn("系统声音识别：\n请解释进程和线程", client.question)
+            self.assertIn("麦克风识别：\n我的回答", client.question)
+            self.assertEqual(client.history, [])
             self.assertEqual(len(list((output.parent / "questions").rglob("*-answer.txt"))), 1)
             self.assertEqual(len(list((output.parent / "questions").rglob("*-interviewer.wav"))), 1)
             self.assertEqual(len(list((output.parent / "questions").rglob("*-me.wav"))), 1)
+            history = (output.parent / "conversation_history.jsonl").read_text(encoding="utf-8")
+            self.assertIn("最终答案", history)
+            archived_before = set((output.parent / "questions").rglob("*"))
+            service.archive_pending_capture(output)
+            self.assertEqual(set((output.parent / "questions").rglob("*")), archived_before)
+
+    def test_stop_only_saves_but_submit_stops_and_calls_model(self):
+        service = load_audio_service()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "interviewer.txt").write_text("系统问题", encoding="utf-8")
+            (output / "me.txt").write_text("麦克风补充", encoding="utf-8")
+            (output / "answer.txt").write_text("上一轮答案", encoding="utf-8")
+            with (
+                mock.patch.object(service, "process_id", return_value=123),
+                mock.patch.object(service, "stop_capture", return_value=True),
+                mock.patch.object(service, "archive_capture") as archive,
+                mock.patch.object(service, "submit_question") as submit,
+            ):
+                self.assertEqual(service.capture_stop(output), 0)
+                archive.assert_called_once()
+                submit.assert_not_called()
+                self.assertEqual((output / "answer.txt").read_text(), "上一轮答案")
+
+            with (
+                mock.patch.object(service, "process_id", return_value=123),
+                mock.patch.object(service, "stop_capture", return_value=True) as stop_capture,
+                mock.patch.object(service, "submit_question", return_value=True) as submit,
+            ):
+                self.assertEqual(service.capture_submit(output), 0)
+                stop_capture.assert_called_once_with(output)
+                submit.assert_called_once_with(output)
 
     def test_build_requires_stable_development_identity(self):
         source = (ROOT / "build_audio.command").read_text(encoding="utf-8")

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mode_controller import ModeController, ModeError
+from mode_controller import AUDIO_EXECUTABLE, ModeController, ModeError
 
 
 class FakeRunner:
@@ -29,6 +29,12 @@ class FakeRunner:
 
 
 class ModeControllerTests(unittest.TestCase):
+    def test_voice_executable_uses_final_app_identity(self):
+        self.assertEqual(
+            AUDIO_EXECUTABLE.parts[-4:],
+            ("LanShot Voice Capture.app", "Contents", "MacOS", "native_audio_capture"),
+        )
+
     def controller(self, directory, runner):
         settings = Path(directory) / "settings.json"
         settings.write_text("{}", encoding="utf-8")

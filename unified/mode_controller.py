@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MANAGER = ROOT / "screenshot-sender" / "manage_services.py"
 AUDIO_SERVICE = ROOT / "lanshot2" / "audio_service.py"
 AUDIO_BUILD = ROOT / "lanshot2" / "build_audio.command"
-AUDIO_EXECUTABLE = ROOT / "lanshot2" / "LanShot2AudioCapture.app/Contents/MacOS/native_audio_capture"
+AUDIO_EXECUTABLE = ROOT / "lanshot2" / "LanShot Voice Capture.app/Contents/MacOS/native_audio_capture"
 DEFAULT_SETTINGS = Path.home() / "Library/Application Support/LanShotP1R2Live/settings.json"
 DEFAULT_STATE_DIR = Path.home() / "Library/Application Support/LanShotUnified"
 

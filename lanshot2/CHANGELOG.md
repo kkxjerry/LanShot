@@ -2,6 +2,9 @@
 
 ## 2026-09-11
 
+- 定位并修复麦克风首帧写入 WAV 时触发 CoreAudio `SIGTRAP` 的崩溃：系统音频和麦克风现在都先转换为单声道、16kHz、Int16 PCM，再写入固定格式 WAV；ASR 写入优先于本地录音，避免录音异常阻断转写。
+- 定位并修复采集约 17 秒后静默停止、进程仍假装运行的问题：ScreenCaptureKit 流现在注册最小屏幕帧消费者，避免未消费视频队列触发 `SCFrameStatusStopped`。
+- 最终签名版本重新授权后完成真实持续验证：两路 WAV 连续增长超过一分钟，进程保持运行，系统音频实时识别出正在播放的中文歌词，且系统日志未再出现流停止事件。
 - 两路实时 ASR 从旧 `qwen3-asr-flash-realtime` Realtime 协议迁移为 `qwen-audio-3.0-asr-flash-streaming` Inference WebSocket 协议；严格等待 `task-started` 后发送二进制 PCM，并处理 `result-generated`、`task-finished` 和 `task-failed`。
 - 使用本机钥匙串凭据和公开 16kHz PCM 测试音频完成真实云端验证：收到 `task-started`、1 条非空 Final 文字和 `task-finished`，未输出或写入明文凭据。
 - 首次真实启动确认新应用身份需要单独授权屏幕与系统音频录制。启动脚本现具备失败回滚：双路音频未启动时会停止已拉起的截图服务，不再留下半启动状态。

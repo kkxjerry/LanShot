@@ -311,7 +311,15 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
 final class AudioFileWriter {
     private let label: String
     private let outputURL: URL
+    private let outputFormat = AVAudioFormat(
+        commonFormat: .pcmFormatInt16,
+        sampleRate: 16_000,
+        channels: 1,
+        interleaved: false
+    )!
     private var file: AVAudioFile?
+    private var converter: AVAudioConverter?
+    private var converterInputFormat: AVAudioFormat?
 
     init(label: String, outputURL: URL) {
         self.label = label
@@ -319,12 +327,49 @@ final class AudioFileWriter {
         try? FileManager.default.removeItem(at: outputURL)
     }
 
-    func append(_ buffer: AVAudioPCMBuffer) {
+    func append(_ inputBuffer: AVAudioPCMBuffer) {
         do {
-            if file == nil {
-                file = try AVAudioFile(forWriting: outputURL, settings: buffer.format.settings)
+            if converter == nil || converterInputFormat != inputBuffer.format {
+                converter = AVAudioConverter(from: inputBuffer.format, to: outputFormat)
+                converterInputFormat = inputBuffer.format
             }
-            try file?.write(from: buffer)
+            guard let converter else {
+                throw NSError(domain: "LanShotAudio", code: 15, userInfo: [
+                    NSLocalizedDescriptionKey: "cannot create \(label) audio converter"
+                ])
+            }
+            let ratio = outputFormat.sampleRate / inputBuffer.format.sampleRate
+            let capacity = AVAudioFrameCount(Double(inputBuffer.frameLength) * ratio) + 64
+            guard let outputBuffer = AVAudioPCMBuffer(
+                pcmFormat: outputFormat,
+                frameCapacity: capacity
+            ) else {
+                throw NSError(domain: "LanShotAudio", code: 16, userInfo: [
+                    NSLocalizedDescriptionKey: "cannot allocate \(label) audio buffer"
+                ])
+            }
+            var suppliedInput = false
+            var conversionError: NSError?
+            converter.convert(to: outputBuffer, error: &conversionError) { _, status in
+                if suppliedInput {
+                    status.pointee = .noDataNow
+                    return nil
+                }
+                suppliedInput = true
+                status.pointee = .haveData
+                return inputBuffer
+            }
+            if let conversionError { throw conversionError }
+            guard outputBuffer.frameLength > 0 else { return }
+            if file == nil {
+                file = try AVAudioFile(
+                    forWriting: outputURL,
+                    settings: outputFormat.settings,
+                    commonFormat: .pcmFormatInt16,
+                    interleaved: false
+                )
+            }
+            try file?.write(from: outputBuffer)
         } catch {
             fputs("\(label) audio write error: \(error.localizedDescription)\n", stderr)
         }
@@ -356,6 +401,9 @@ final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
+        if outputType == .screen {
+            return
+        }
         let destination: (AudioFileWriter, QwenRealtimeTranscriber)
         if outputType == .audio {
             destination = (systemWriter, systemTranscriber)
@@ -381,8 +429,8 @@ final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
                 into: buffer.mutableAudioBufferList
             )
             if status == noErr {
-                destination.0.append(buffer)
                 destination.1.append(buffer)
+                destination.0.append(buffer)
             }
     }
 
@@ -553,7 +601,9 @@ struct LanShotAudioCapture {
 
             let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
             let stream = SCStream(filter: filter, configuration: configuration, delegate: captureOutput)
+            let videoQueue = DispatchQueue(label: "lanshot.video.keepalive")
             let audioQueue = DispatchQueue(label: "lanshot.dual-audio")
+            try stream.addStreamOutput(captureOutput, type: .screen, sampleHandlerQueue: videoQueue)
             try stream.addStreamOutput(captureOutput, type: .audio, sampleHandlerQueue: audioQueue)
             if #available(macOS 15.0, *) {
                 try stream.addStreamOutput(captureOutput, type: .microphone, sampleHandlerQueue: audioQueue)

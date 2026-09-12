@@ -40,6 +40,58 @@ def overlay_process_id(output: Path) -> int | None:
     return tracked_process_id(output, "voice_overlay.pid")
 
 
+def control_process_id(output: Path) -> int | None:
+    return tracked_process_id(output, "voice_control.pid")
+
+
+def start_control(output: Path) -> None:
+    if control_process_id(output):
+        return
+    try:
+        (output / "voice_control.pid").unlink()
+    except FileNotFoundError:
+        pass
+    subprocess.Popen(
+        [sys.executable, str(Path(__file__).resolve()), "control-loop", "--output", str(output)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if control_process_id(output):
+            return
+        time.sleep(0.1)
+    raise RuntimeError("语音采集控制器启动超时")
+
+
+def stop_control(output: Path) -> bool:
+    pid = control_process_id(output)
+    if not pid:
+        return True
+    command = output / "voice_capture_command.txt"
+    temporary = command.with_suffix(".tmp")
+    temporary.write_text(f"quit {time.time_ns()}\n", encoding="utf-8")
+    os.replace(temporary, command)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if not control_process_id(output):
+            return True
+        time.sleep(0.1)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        if not control_process_id(output):
+            return True
+        time.sleep(0.1)
+    return False
+
+
 def start_overlay(output: Path) -> None:
     if overlay_process_id(output):
         return
@@ -51,7 +103,14 @@ def start_overlay(output: Path) -> None:
         except FileNotFoundError:
             pass
     subprocess.run(
-        ["open", "-n", str(OVERLAY_APP), "--args", "--lanshot-voice-dir", str(output)],
+        [
+            "open",
+            "-n",
+            str(OVERLAY_APP),
+            "--args",
+            "--lanshot-voice-dir",
+            str(output),
+        ],
         check=True,
     )
     deadline = time.monotonic() + 8
@@ -87,7 +146,43 @@ def stop_overlay(output: Path) -> bool:
     return False
 
 
-def start(output: Path) -> int:
+def prepare(output: Path) -> int:
+    output.mkdir(parents=True, exist_ok=True)
+    if not process_id(output) and read_text(output / "capture.log") in ("", "running", "starting"):
+        (output / "capture.log").write_text("stopped\n", encoding="utf-8")
+    try:
+        start_control(output)
+        start_overlay(output)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        stop_control(output)
+        print(str(error), file=sys.stderr)
+        return 1
+    print("语音模式已就绪，点击悬浮窗或菜单栏中的“开始采集”后才会录音")
+    return 0
+
+
+def stop_capture(output: Path) -> bool:
+    pid = process_id(output)
+    if not pid:
+        (output / "capture.log").write_text("stopped\n", encoding="utf-8")
+        return True
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and process_id(output):
+        time.sleep(0.2)
+    stopped = process_id(output) is None
+    if stopped:
+        (output / "capture.log").write_text("stopped\n", encoding="utf-8")
+    return stopped
+
+
+def start(output: Path, *, ensure_controller: bool = True) -> int:
+    if ensure_controller:
+        try:
+            start_control(output)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
     if process_id(output):
         try:
             start_overlay(output)
@@ -146,43 +241,86 @@ def start(output: Path) -> int:
 
 
 def stop(output: Path) -> int:
-    pid = process_id(output)
-    if not pid:
-        overlay_stopped = stop_overlay(output)
-        print("音频采集没有运行，语音悬浮窗已停止" if overlay_stopped else "语音悬浮窗停止超时")
-        return 0 if overlay_stopped else 1
-    os.kill(pid, signal.SIGTERM)
-    deadline = time.monotonic() + 60
-    while time.monotonic() < deadline and process_id(output):
-        time.sleep(0.2)
-    audio_stopped = process_id(output) is None
+    control_stopped = stop_control(output)
+    audio_stopped = stop_capture(output)
     overlay_stopped = stop_overlay(output)
-    if not audio_stopped or not overlay_stopped:
+    if not control_stopped or not audio_stopped or not overlay_stopped:
         print("停止超时", file=sys.stderr)
         return 1
     print("音频采集和语音悬浮窗已停止，文件已写完")
     return 0
 
 
+def capture_stop(output: Path) -> int:
+    if not stop_capture(output):
+        print("停止采集超时", file=sys.stderr)
+        return 1
+    print("采集已停止，悬浮窗继续保留")
+    return 0
+
+
+def control_loop(output: Path) -> int:
+    output.mkdir(parents=True, exist_ok=True)
+    pid_url = output / "voice_control.pid"
+    command_url = output / "voice_capture_command.txt"
+    stopping = False
+
+    def request_stop(_signal: int, _frame: object) -> None:
+        nonlocal stopping
+        stopping = True
+
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    pid_url.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    last_command = read_text(command_url)
+    try:
+        while not stopping:
+            command = read_text(command_url)
+            if command and command != last_command:
+                last_command = command
+                action = command.split(maxsplit=1)[0]
+                if action == "start":
+                    start(output, ensure_controller=False)
+                elif action == "stop":
+                    capture_stop(output)
+                elif action == "quit":
+                    break
+            time.sleep(0.1)
+    finally:
+        if read_text(pid_url) == str(os.getpid()):
+            pid_url.unlink(missing_ok=True)
+    return 0
+
+
 def status(output: Path) -> int:
     pid = process_id(output)
     overlay_pid = overlay_process_id(output)
+    control_pid = control_process_id(output)
     state = read_text(output / "capture.log") or "未启动"
     if state == "running" and not pid:
         state = "failed: process exited unexpectedly"
     print(f"状态：{state}")
     print(f"进程：{pid if pid else '无'}")
     print(f"悬浮窗：{overlay_pid if overlay_pid else '无'}")
+    print(f"控制器：{control_pid if control_pid else '无'}")
     print(f"目录：{output}")
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="LanShot2 双路实时音频采集和语音识别")
-    parser.add_argument("command", choices=("start", "stop", "status"))
+    commands = ("prepare", "start", "capture-stop", "stop", "status", "control-loop")
+    parser.add_argument("command", choices=commands)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
-    return {"start": start, "stop": stop, "status": status}[args.command](
+    return {
+        "prepare": prepare,
+        "start": start,
+        "capture-stop": capture_stop,
+        "stop": stop,
+        "status": status,
+        "control-loop": control_loop,
+    }[args.command](
         args.output.expanduser().resolve()
     )
 

@@ -107,6 +107,14 @@ private extension Double {
     }
 }
 
+struct VoiceOverlaySnapshot: Equatable {
+    let status: String
+    let isCapturing: Bool
+    let interviewer: String
+    let me: String
+    let answer: String
+}
+
 @MainActor
 final class LatestAnswerMonitor {
     private let url: URL
@@ -114,13 +122,16 @@ final class LatestAnswerMonitor {
     private let pageCommandURL: URL
     private let stateURL: URL?
     private let displayDirectory: URL
+    private let voiceAnswerURL: URL?
     private var lastViewKey: String?
     private var timer: Timer?
     private var lastAnswer: String?
+    private var lastVoiceSnapshot: VoiceOverlaySnapshot?
     private var lastPageCommand: String?
     private var pageCommandInitialized = false
     let isVoiceMode: Bool
     var onChange: ((String) -> Void)?
+    var onVoiceChange: ((VoiceOverlaySnapshot) -> Void)?
     var onPageDown: (() -> Void)?
     var onPageUp: (() -> Void)?
     var onMoveToMouse: (() -> Void)?
@@ -139,6 +150,7 @@ final class LatestAnswerMonitor {
             self.pageCommandURL = pageCommandURL
                 ?? voiceDirectory.appendingPathComponent("voice_overlay_command.txt")
             self.stateURL = nil
+            self.voiceAnswerURL = voiceDirectory.appendingPathComponent("answer.txt")
             self.isVoiceMode = true
             return
         }
@@ -152,6 +164,7 @@ final class LatestAnswerMonitor {
         self.secondaryURL = nil
         self.pageCommandURL = pageCommandURL ?? dataDirectory.appendingPathComponent("page.txt")
         self.stateURL = configured == nil ? nil : dataDirectory.appendingPathComponent("latest_state.json")
+        self.voiceAnswerURL = nil
         self.isVoiceMode = false
     }
 
@@ -159,6 +172,23 @@ final class LatestAnswerMonitor {
         guard stateURL != nil else { return }
         writeJSON(["id": UUID().uuidString.lowercased(), "at": Date().timeIntervalSince1970],
                   name: "capture_request.json")
+    }
+
+    func toggleVoiceCapture() {
+        guard isVoiceMode else { return }
+        let state = readText(from: displayDirectory.appendingPathComponent("capture.log"))
+        let command = state == "running" || state == "starting" ? "stop" : "start"
+        let requestedState = command == "start" ? "starting\n" : "stopping\n"
+        try? requestedState.write(
+            to: displayDirectory.appendingPathComponent("capture.log"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try? "\(command) \(UUID().uuidString.lowercased())\n".write(
+            to: displayDirectory.appendingPathComponent("voice_capture_command.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
     }
 
     private func writeJSON(_ value: [String: Any], name: String) {
@@ -233,19 +263,54 @@ final class LatestAnswerMonitor {
     }
 
     private func reloadVoiceTranscript() {
-        let interviewer = readText(from: url)
-        let me = secondaryURL.flatMap(readText)
-        var sections: [String] = []
-        if let interviewer {
-            sections.append("面试官\n\(interviewer)")
+        let captureState = readText(
+            from: displayDirectory.appendingPathComponent("capture.log")
+        ) ?? "stopped"
+        let isCapturing = captureState == "running"
+        let snapshot = VoiceOverlaySnapshot(
+            status: voiceStatusText(state: captureState),
+            isCapturing: isCapturing,
+            interviewer: readText(from: url) ?? "等待系统声音...",
+            me: secondaryURL.flatMap { readText(from: $0) } ?? "等待麦克风声音...",
+            answer: voiceAnswerURL.flatMap { readText(from: $0) } ?? "等待答案..."
+        )
+        guard snapshot != lastVoiceSnapshot else { return }
+        lastVoiceSnapshot = snapshot
+        onVoiceChange?(snapshot)
+    }
+
+    private func voiceStatusText(state: String) -> String {
+        switch state {
+        case "running":
+            let pidURL = displayDirectory.appendingPathComponent("capture.pid")
+            let attributes = try? FileManager.default.attributesOfItem(atPath: pidURL.path)
+            let startedAt = attributes?[.modificationDate] as? Date ?? Date()
+            let components = Calendar.current.dateComponents(
+                [.hour, .minute, .second],
+                from: startedAt
+            )
+            let startTime = String(
+                format: "%02d:%02d:%02d",
+                components.hour ?? 0,
+                components.minute ?? 0,
+                components.second ?? 0
+            )
+            let elapsed = max(0, Int(Date().timeIntervalSince(startedAt)))
+            return String(
+                format: "正在采集 | %@ 开始 | %02d:%02d",
+                startTime,
+                elapsed / 60,
+                elapsed % 60
+            )
+        case "starting":
+            return "正在启动采集..."
+        case "stopping":
+            return "正在停止采集..."
+        case let value where value.hasPrefix("failed:"):
+            return "采集失败 | 请重新开始"
+        default:
+            return "尚未采集 | 点击开始采集"
         }
-        if let me {
-            sections.append("我\n\(me)")
-        }
-        let answer = sections.isEmpty ? "正在监听语音..." : sections.joined(separator: "\n\n")
-        guard answer != lastAnswer else { return }
-        lastAnswer = answer
-        onChange?(answer)
     }
 
     private func reloadVersionedState(_ path: URL) {
@@ -312,12 +377,31 @@ final class LatestAnswerMonitor {
 final class FloatingPanel: NSPanel {
     private let preferences: OverlayPreferences
     private let followLatest: Bool
+    private let onToggleCapture: () -> Void
     private var answer = "等待 AI 回答..."
+    private var voiceSnapshot = VoiceOverlaySnapshot(
+        status: "尚未采集 | 点击开始采集",
+        isCapturing: false,
+        interviewer: "等待系统声音...",
+        me: "等待麦克风声音...",
+        answer: "等待答案..."
+    )
 
-    init(preferences: OverlayPreferences, followLatest: Bool = false) {
+    init(
+        preferences: OverlayPreferences,
+        followLatest: Bool = false,
+        onToggleCapture: @escaping () -> Void = {}
+    ) {
         self.preferences = preferences
         self.followLatest = followLatest
-        let panelSize = NSSize(width: preferences.width, height: preferences.height)
+        self.onToggleCapture = onToggleCapture
+        let visibleFrame = NSScreen.main?.visibleFrame ?? .zero
+        let panelSize = followLatest
+            ? NSSize(
+                width: min(visibleFrame.width - 40, max(760, visibleFrame.width * 0.82)),
+                height: min(visibleFrame.height - 40, max(520, visibleFrame.height * 0.78))
+            )
+            : NSSize(width: preferences.width, height: preferences.height)
         super.init(
             contentRect: NSRect(origin: .zero, size: panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -339,24 +423,44 @@ final class FloatingPanel: NSPanel {
 
     func applyPreferences(preserveCenter: Bool = true) {
         let oldCenter = NSPoint(x: frame.midX, y: frame.midY)
-        let size = NSSize(width: preferences.width, height: preferences.height)
+        let visibleFrame = NSScreen.main?.visibleFrame ?? .zero
+        let size = followLatest
+            ? NSSize(
+                width: min(visibleFrame.width - 40, max(760, visibleFrame.width * 0.82)),
+                height: min(visibleFrame.height - 40, max(520, visibleFrame.height * 0.78))
+            )
+            : NSSize(width: preferences.width, height: preferences.height)
         let origin = preserveCenter
             ? NSPoint(x: oldCenter.x - size.width / 2, y: oldCenter.y - size.height / 2)
             : frame.origin
 
         setFrame(NSRect(origin: origin, size: size), display: true)
         sharingType = .none
-        contentView = PanelContentView(
-            frame: NSRect(origin: .zero, size: size),
-            preferences: preferences,
-            answer: answer,
-            followLatest: followLatest
-        )
+        if followLatest {
+            contentView = VoicePanelContentView(
+                frame: NSRect(origin: .zero, size: size),
+                preferences: preferences,
+                snapshot: voiceSnapshot,
+                onToggleCapture: onToggleCapture
+            )
+        } else {
+            contentView = PanelContentView(
+                frame: NSRect(origin: .zero, size: size),
+                preferences: preferences,
+                answer: answer,
+                followLatest: false
+            )
+        }
     }
 
     func updateAnswer(_ answer: String) {
         self.answer = answer
         (contentView as? PanelContentView)?.updateAnswer(answer)
+    }
+
+    func updateVoice(_ snapshot: VoiceOverlaySnapshot) {
+        voiceSnapshot = snapshot
+        (contentView as? VoicePanelContentView)?.update(snapshot)
     }
 
     func pageDown() {
@@ -560,6 +664,195 @@ final class PanelContentView: NSView {
         (NSApp.delegate as? AppDelegate)?.showSettings()
     }
 
+}
+
+@MainActor
+final class VoicePanelContentView: NSView {
+    private let onToggleCapture: () -> Void
+    private let textColor: NSColor
+    private let textOpacity: CGFloat
+    private var statusLabel: NSTextField!
+    private var toggleButton: NSButton!
+    private var systemTitle: NSTextField!
+    private var microphoneTitle: NSTextField!
+    private var answerTitle: NSTextField!
+    private var systemScrollView: NSScrollView!
+    private var microphoneScrollView: NSScrollView!
+    private var answerScrollView: NSScrollView!
+    private var systemTextView: NSTextView!
+    private var microphoneTextView: NSTextView!
+    private var answerTextView: NSTextView!
+
+    init(
+        frame frameRect: NSRect,
+        preferences: OverlayPreferences,
+        snapshot: VoiceOverlaySnapshot,
+        onToggleCapture: @escaping () -> Void
+    ) {
+        self.onToggleCapture = onToggleCapture
+        self.textColor = preferences.textColor
+        self.textOpacity = preferences.textOpacity
+        super.init(frame: frameRect)
+
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        statusLabel = makeLabel(size: 13, weight: .semibold)
+        toggleButton = NSButton(
+            title: "开始采集",
+            target: self,
+            action: #selector(toggleCapture)
+        )
+        toggleButton.bezelStyle = .rounded
+        systemTitle = makeLabel(text: "系统声音", size: 14, weight: .bold)
+        microphoneTitle = makeLabel(text: "麦克风", size: 14, weight: .bold)
+        answerTitle = makeLabel(text: "答案", size: 14, weight: .bold)
+        (systemScrollView, systemTextView) = makeTextArea(fontSize: preferences.fontSize)
+        (microphoneScrollView, microphoneTextView) = makeTextArea(fontSize: preferences.fontSize)
+        (answerScrollView, answerTextView) = makeTextArea(fontSize: preferences.fontSize)
+
+        for view in [
+            statusLabel,
+            toggleButton,
+            systemTitle,
+            microphoneTitle,
+            answerTitle,
+            systemScrollView,
+            microphoneScrollView,
+            answerScrollView,
+        ] {
+            if let view { addSubview(view) }
+        }
+        update(snapshot)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        let inset: CGFloat = 12
+        let gap: CGFloat = 12
+        let titleHeight: CGFloat = 22
+        let headerHeight: CGFloat = 30
+        let buttonWidth: CGFloat = 104
+        let contentWidth = max(0, bounds.width - inset * 2)
+        let headerY = max(inset, bounds.height - inset - headerHeight)
+        statusLabel.frame = NSRect(
+            x: inset,
+            y: headerY,
+            width: max(0, contentWidth - buttonWidth - gap),
+            height: headerHeight
+        )
+        toggleButton.frame = NSRect(
+            x: max(inset, bounds.width - inset - buttonWidth),
+            y: headerY,
+            width: buttonWidth,
+            height: headerHeight
+        )
+
+        let bodyHeight = max(0, headerY - inset - gap)
+        let transcriptHeight = bodyHeight * 0.35
+        let answerHeight = max(0, bodyHeight - transcriptHeight - gap)
+        let answerY = inset
+        let transcriptY = answerY + answerHeight + gap
+        let columnWidth = max(0, (contentWidth - gap) / 2)
+
+        systemTitle.frame = NSRect(
+            x: inset,
+            y: transcriptY + transcriptHeight - titleHeight,
+            width: columnWidth,
+            height: titleHeight
+        )
+        microphoneTitle.frame = NSRect(
+            x: inset + columnWidth + gap,
+            y: transcriptY + transcriptHeight - titleHeight,
+            width: columnWidth,
+            height: titleHeight
+        )
+        systemScrollView.frame = NSRect(
+            x: inset,
+            y: transcriptY,
+            width: columnWidth,
+            height: max(0, transcriptHeight - titleHeight)
+        )
+        microphoneScrollView.frame = NSRect(
+            x: inset + columnWidth + gap,
+            y: transcriptY,
+            width: columnWidth,
+            height: max(0, transcriptHeight - titleHeight)
+        )
+        answerTitle.frame = NSRect(
+            x: inset,
+            y: answerY + answerHeight - titleHeight,
+            width: contentWidth,
+            height: titleHeight
+        )
+        answerScrollView.frame = NSRect(
+            x: inset,
+            y: answerY,
+            width: contentWidth,
+            height: max(0, answerHeight - titleHeight)
+        )
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
+
+    func update(_ snapshot: VoiceOverlaySnapshot) {
+        statusLabel.stringValue = snapshot.status
+        statusLabel.textColor = (snapshot.isCapturing ? NSColor.systemGreen : textColor)
+            .withAlphaComponent(max(textOpacity, 0.55))
+        toggleButton.title = snapshot.isCapturing ? "停止采集" : "开始采集"
+        systemTextView.string = snapshot.interviewer
+        microphoneTextView.string = snapshot.me
+        answerTextView.string = snapshot.answer
+        systemTextView.scrollToEndOfDocument(nil)
+        microphoneTextView.scrollToEndOfDocument(nil)
+        answerTextView.scrollToEndOfDocument(nil)
+    }
+
+    private func makeLabel(
+        text: String = "",
+        size: CGFloat,
+        weight: NSFont.Weight
+    ) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: size, weight: weight)
+        label.textColor = textColor.withAlphaComponent(max(textOpacity, 0.55))
+        label.lineBreakMode = .byTruncatingTail
+        return label
+    }
+
+    private func makeTextArea(fontSize: CGFloat) -> (NSScrollView, NSTextView) {
+        let scrollView = NSScrollView(frame: .zero)
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = false
+        let textView = DraggableAnswerTextView(frame: .zero)
+        textView.font = .systemFont(ofSize: fontSize, weight: .semibold)
+        textView.textColor = textColor.withAlphaComponent(textOpacity)
+        textView.drawsBackground = false
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.textContainerInset = NSSize(width: 6, height: 6)
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(
+            width: 0,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        scrollView.documentView = textView
+        return (scrollView, textView)
+    }
+
+    @objc private func toggleCapture() {
+        onToggleCapture()
+    }
 }
 
 @MainActor
@@ -834,11 +1127,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: FloatingPanel?
     private var settingsController: SettingsWindowController?
     private var statusItem: NSStatusItem?
+    private var captureToggleItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let panel = FloatingPanel(
             preferences: preferences,
-            followLatest: answerMonitor.isVoiceMode
+            followLatest: answerMonitor.isVoiceMode,
+            onToggleCapture: { [weak self] in
+                self?.answerMonitor.toggleVoiceCapture()
+            }
         )
         self.panel = panel
         preferences.onChange = { [weak self] in
@@ -846,6 +1143,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         answerMonitor.onChange = { [weak self] answer in
             self?.panel?.updateAnswer(answer)
+        }
+        answerMonitor.onVoiceChange = { [weak self] snapshot in
+            self?.panel?.updateVoice(snapshot)
+            self?.updateVoiceStatus(snapshot)
         }
         answerMonitor.onPageDown = { [weak self] in
             self?.panel?.pageDown()
@@ -867,6 +1168,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.toolTip = answerMonitor.isVoiceMode ? "LanShot 语音模式" : "LanShot 截屏模式"
         let menu = NSMenu()
         if answerMonitor.isVoiceMode {
+            let captureItem = NSMenuItem(
+                title: "开始采集",
+                action: #selector(toggleVoiceCapture),
+                keyEquivalent: ""
+            )
+            captureItem.target = self
+            menu.addItem(captureItem)
+            captureToggleItem = captureItem
+            menu.addItem(NSMenuItem.separator())
             let toggleItem = NSMenuItem(
                 title: "显示或隐藏字幕",
                 action: #selector(togglePanel),
@@ -908,6 +1218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func manualCapture() { answerMonitor.requestCapture() }
+    @objc private func toggleVoiceCapture() { answerMonitor.toggleVoiceCapture() }
     @objc private func togglePanel() { panel?.toggleVisibility() }
     @objc private func centerPanel() { panel?.centerNearTop() }
     @objc private func openSettingsMenu() { showSettings() }
@@ -923,6 +1234,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func centerOverlay() {
         panel?.centerNearTop()
+    }
+
+    private func updateVoiceStatus(_ snapshot: VoiceOverlaySnapshot) {
+        captureToggleItem?.title = snapshot.isCapturing ? "停止采集" : "开始采集"
+        let symbolName = snapshot.isCapturing ? "mic.fill" : "mic.slash.fill"
+        let icon = NSImage(systemSymbolName: symbolName, accessibilityDescription: "LanShot")
+        icon?.isTemplate = true
+        statusItem?.button?.image = icon
+        statusItem?.button?.toolTip = snapshot.status
     }
 
     func applicationWillTerminate(_ notification: Notification) {

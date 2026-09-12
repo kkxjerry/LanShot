@@ -26,7 +26,11 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('["open", "-n"', source)
         self.assertIn('"--lanshot-voice-dir"', source)
         self.assertIn('"voice_overlay.pid"', source)
+        self.assertIn('"voice_control.pid"', source)
         self.assertIn('"voice_overlay_command.txt"', source)
+        self.assertIn('"voice_capture_command.txt"', source)
+        self.assertIn('"capture-stop"', source)
+        self.assertIn('"control-loop"', source)
 
     def test_voice_overlay_shows_both_transcripts_and_menu_icon(self):
         source = (
@@ -35,7 +39,10 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('"--lanshot-voice-dir"', source)
         self.assertIn('appendingPathComponent("interviewer.txt")', source)
         self.assertIn('appendingPathComponent("me.txt")', source)
+        self.assertIn('appendingPathComponent("answer.txt")', source)
         self.assertIn('"mic.fill"', source)
+        self.assertIn('bodyHeight * 0.35', source)
+        self.assertIn('title: "开始采集"', source)
         self.assertIn("sharingType = .none", source)
 
     def test_build_requires_stable_development_identity(self):

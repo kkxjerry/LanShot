@@ -92,6 +92,15 @@ class ModeController:
         except (OSError, ValueError):
             return False
 
+    def _voice_control_running(self) -> bool:
+        pid_file = Path.home() / "Library/Application Support/LanShot2/audio/voice_control.pid"
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)
+            return True
+        except (OSError, ValueError):
+            return False
+
     def _screenshot_running(self) -> bool:
         result = self._run([
             "/usr/bin/pgrep", "-f",
@@ -126,7 +135,11 @@ class ModeController:
         if mode == "screenshot":
             self._stop_audio()
             if not self._wait_stopped(
-                lambda: self._audio_running() or self._voice_overlay_running()
+                lambda: (
+                    self._audio_running()
+                    or self._voice_overlay_running()
+                    or self._voice_control_running()
+                )
             ):
                 self._write_state("stopped", "failed", "语音模式未能停止")
                 raise ModeError("语音模式未能停止，拒绝同时启动截屏模式")
@@ -158,21 +171,28 @@ class ModeController:
             if build.returncode != 0:
                 self._write_state("stopped", "failed", "语音悬浮窗构建失败")
                 raise ModeError((build.stderr or build.stdout or "语音悬浮窗构建失败").strip())
-        result = self._run([sys.executable, str(AUDIO_SERVICE), "start"], timeout=40)
+        result = self._run([sys.executable, str(AUDIO_SERVICE), "prepare"], timeout=40)
         if result.returncode != 0:
             self._write_state("stopped", "failed", "语音模式启动失败")
             raise ModeError((result.stderr or result.stdout or "语音模式启动失败").strip())
-        self._write_state(mode, "ready", "系统音频和麦克风双路实时ASR已启动")
-        return {"mode": mode, "status": "ready", "detail": result.stdout.strip()}
+        self._write_state(mode, "idle", "语音界面已打开，等待用户开始采集")
+        return {"mode": mode, "status": "idle", "detail": result.stdout.strip()}
 
     def stop(self) -> dict:
         audio = self._stop_audio()
         screenshot = self._stop_screenshot()
-        self._wait_stopped(lambda: self._audio_running() or self._voice_overlay_running())
+        self._wait_stopped(
+            lambda: (
+                self._audio_running()
+                or self._voice_overlay_running()
+                or self._voice_control_running()
+            )
+        )
         self._wait_stopped(self._screenshot_running)
         remaining = {
             "voice": self._audio_running(),
             "voice_overlay": self._voice_overlay_running(),
+            "voice_control": self._voice_control_running(),
             "screenshot": self._screenshot_running(),
         }
         status = "stopped" if not any(remaining.values()) else "degraded"
@@ -188,13 +208,16 @@ class ModeController:
     def status(self) -> dict:
         voice = self._audio_running()
         voice_overlay = self._voice_overlay_running()
+        voice_control = self._voice_control_running()
         screenshot = self._screenshot_running()
-        if (voice or voice_overlay) and screenshot:
+        if (voice or voice_overlay or voice_control) and screenshot:
             mode, status = "conflict", "degraded"
         elif voice:
-            mode, status = "voice", "running" if voice_overlay else "degraded"
-        elif voice_overlay:
-            mode, status = "voice", "degraded"
+            mode = "voice"
+            status = "running" if voice_overlay and voice_control else "degraded"
+        elif voice_overlay or voice_control:
+            mode = "voice"
+            status = "idle" if voice_overlay and voice_control else "degraded"
         elif screenshot:
             mode, status = "screenshot", "running"
         else:
@@ -204,6 +227,7 @@ class ModeController:
             "status": status,
             "voice_running": voice,
             "voice_overlay_running": voice_overlay,
+            "voice_control_running": voice_control,
             "screenshot_running": screenshot,
             "godhands_running": self._godhands_running(),
             "audio_directory": str(Path.home() / "Library/Application Support/LanShot2/audio"),

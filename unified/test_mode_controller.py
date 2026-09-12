@@ -21,7 +21,7 @@ class FakeRunner:
             if ("[g]odhands" in text.lower() or "GodHands.app" in text) and self.godhands:
                 return subprocess.CompletedProcess(command, 0, "123\n", "")
             return subprocess.CompletedProcess(command, 1, "", "")
-        if "audio_service.py start" in text:
+        if "audio_service.py prepare" in text:
             return subprocess.CompletedProcess(command, self.audio_start_code, "audio started", "audio failed")
         if "manage_services.py start" in text:
             return subprocess.CompletedProcess(command, self.screenshot_start_code, "screenshot started", "screenshot failed")
@@ -50,6 +50,7 @@ class ModeControllerTests(unittest.TestCase):
         )
         controller._audio_running = lambda: False
         controller._voice_overlay_running = lambda: False
+        controller._voice_control_running = lambda: False
         return controller
 
     def test_screenshot_mode_stops_audio_before_starting_screenshot(self):
@@ -68,10 +69,10 @@ class ModeControllerTests(unittest.TestCase):
             runner = FakeRunner()
             controller = self.controller(directory, runner)
             result = controller.switch("voice")
-            self.assertEqual(result["status"], "ready")
+            self.assertEqual(result["status"], "idle")
             calls = [" ".join(call) for call in runner.calls]
             self.assertLess(next(i for i, call in enumerate(calls) if "manage_services.py stop" in call),
-                            next(i for i, call in enumerate(calls) if "audio_service.py start" in call))
+                            next(i for i, call in enumerate(calls) if "audio_service.py prepare" in call))
 
     def test_failed_voice_start_does_not_claim_voice_mode(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -80,6 +81,14 @@ class ModeControllerTests(unittest.TestCase):
                 controller.switch("voice")
             state = json.loads(controller.state_file.read_text())
             self.assertEqual((state["mode"], state["status"]), ("stopped", "failed"))
+
+    def test_voice_ui_without_capture_is_idle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            controller = self.controller(directory, FakeRunner())
+            controller._voice_overlay_running = lambda: True
+            controller._voice_control_running = lambda: True
+            result = controller.status()
+            self.assertEqual((result["mode"], result["status"]), ("voice", "idle"))
 
     def test_godhands_conflict_is_rejected_before_switch(self):
         with tempfile.TemporaryDirectory() as directory:

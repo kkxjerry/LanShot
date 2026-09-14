@@ -1,4 +1,6 @@
 #!/bin/zsh
 set -euo pipefail
 SCRIPT_DIR="${0:A:h}"
-python3 "$SCRIPT_DIR/mode_controller.py" voice
+source "$SCRIPT_DIR/runtime_python.zsh"
+PYTHON="$(lanshot_python)"
+"$PYTHON" "$SCRIPT_DIR/mode_controller.py" voice

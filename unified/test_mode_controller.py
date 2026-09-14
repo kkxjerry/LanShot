@@ -29,6 +29,20 @@ class FakeRunner:
 
 
 class ModeControllerTests(unittest.TestCase):
+    def test_portable_installer_builds_voice_mode_without_storing_key(self):
+        root = Path(__file__).resolve().parents[1]
+        installer = (root / "install.command").read_text(encoding="utf-8")
+        runtime = (root / "unified/runtime_python.zsh").read_text(encoding="utf-8")
+        self.assertIn("security add-generic-password", installer)
+        self.assertIn("capture-exclusion-demo/build.sh", installer)
+        self.assertIn("lanshot2/build_audio.command", installer)
+        self.assertIn("mode_controller.py\" voice", installer)
+        self.assertNotRegex(installer, r"sk-[A-Za-z0-9]{16,}")
+        self.assertIn("sys.version_info < (3, 10)", runtime)
+        for name in ("LanShot.command", "voice_mode.command", "stop_all.command"):
+            launcher = (root / "unified" / name).read_text(encoding="utf-8")
+            self.assertIn("runtime_python.zsh", launcher)
+
     def test_voice_executable_uses_final_app_identity(self):
         self.assertEqual(
             AUDIO_EXECUTABLE.parts[-4:],
@@ -74,6 +88,21 @@ class ModeControllerTests(unittest.TestCase):
             calls = [" ".join(call) for call in runner.calls]
             self.assertLess(next(i for i, call in enumerate(calls) if "manage_services.py stop" in call),
                             next(i for i, call in enumerate(calls) if "audio_service.py prepare" in call))
+
+    def test_voice_mode_does_not_require_screenshot_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ModeController(
+                Path(directory) / "missing-settings.json",
+                Path(directory) / "state",
+                runner=FakeRunner(),
+                sleeper=lambda _: None,
+            )
+            controller._audio_running = lambda: False
+            controller._voice_overlay_running = lambda: False
+            controller._voice_control_running = lambda: False
+            controller._voice_hotkey_ready = lambda: False
+
+            self.assertEqual(controller.switch("voice")["status"], "idle")
 
     def test_failed_voice_start_does_not_claim_voice_mode(self):
         with tempfile.TemporaryDirectory() as directory:

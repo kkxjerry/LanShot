@@ -2,6 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
+source "$SCRIPT_DIR/runtime_python.zsh"
+PYTHON="$(lanshot_python)"
 choice=$(/usr/bin/osascript <<'APPLESCRIPT'
 tell application "System Events"
     activate
@@ -17,7 +19,7 @@ case "$choice" in
   *) mode="stop" ;;
 esac
 
-python3 "$SCRIPT_DIR/mode_controller.py" "$mode"
+"$PYTHON" "$SCRIPT_DIR/mode_controller.py" "$mode"
 echo
 read -k 1 "?按任意键关闭窗口..."
 echo

@@ -136,7 +136,7 @@ class ModeController:
             raise ValueError("mode must be screenshot or voice")
         if self._godhands_running():
             raise ModeError("GodHands 正在运行，请先退出，避免音频和快捷键冲突")
-        if not self.settings.is_file():
+        if mode == "screenshot" and not self.settings.is_file():
             raise ModeError(f"找不到 LanShot 设置：{self.settings}")
 
         if mode == "screenshot":

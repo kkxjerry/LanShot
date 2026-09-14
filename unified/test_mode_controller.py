@@ -39,6 +39,8 @@ class ModeControllerTests(unittest.TestCase):
         self.assertIn("mode_controller.py\" voice", installer)
         self.assertNotRegex(installer, r"sk-[A-Za-z0-9]{16,}")
         self.assertIn("sys.version_info < (3, 10)", runtime)
+        self.assertIn("/opt/homebrew/opt/python@3.12/libexec/bin/python3", runtime)
+        self.assertIn("/usr/local/opt/python@3.12/libexec/bin/python3", runtime)
         for name in ("LanShot.command", "voice_mode.command", "stop_all.command"):
             launcher = (root / "unified" / name).read_text(encoding="utf-8")
             self.assertIn("runtime_python.zsh", launcher)

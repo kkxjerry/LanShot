@@ -2,6 +2,7 @@
 
 ## 2026-09-14
 
+- 运行时选择器增加 Homebrew `python@3.10` 至 `python@3.14` 的 Apple Silicon 与 Intel 固定路径；另一台 Mac 即使保留系统 Python 3.9，也只需并行安装 `python@3.12`。
 - 增加另一台 Mac 的一键安装入口：检查 macOS、Python 和 Swift 工具链，写入本机钥匙串、编译原生程序，并启动语音模式到不录音的待机状态。
 - 所有双击启动脚本通过统一运行时选择器定位 Python 3.10 以上版本，避免 Finder 启动时误用 macOS 自带 Python 3.9。
 - 语音模式不再依赖另一台 Mac 上不存在的截屏模式配置；没有 Apple Development 证书时安装器可生成一次性本地签名，并明确提示重新编译后的权限影响。

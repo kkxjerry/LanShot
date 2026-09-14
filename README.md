@@ -11,6 +11,14 @@ LanShot 是一个 macOS 本地面试辅助工具，包含截屏模式和双路�
 - Xcode Command Line Tools，需包含 `swiftc`。
 - 可用的阿里云百炼 API Key。
 
+如果系统只有 Python 3.9，使用 Homebrew 并行安装即可，不要替换 macOS 自带版本：
+
+```sh
+brew install python@3.12
+```
+
+安装器会自动查找 Apple Silicon 和 Intel Mac 上的 Homebrew Python 3.10 至 3.14。
+
 执行：
 
 ```sh

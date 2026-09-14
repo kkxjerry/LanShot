@@ -9,7 +9,17 @@ lanshot_python() {
   candidates+=(
     "${commands[python3]:-}"
     "/opt/homebrew/bin/python3"
+    "/opt/homebrew/opt/python@3.14/libexec/bin/python3"
+    "/opt/homebrew/opt/python@3.13/libexec/bin/python3"
+    "/opt/homebrew/opt/python@3.12/libexec/bin/python3"
+    "/opt/homebrew/opt/python@3.11/libexec/bin/python3"
+    "/opt/homebrew/opt/python@3.10/libexec/bin/python3"
     "/usr/local/bin/python3"
+    "/usr/local/opt/python@3.14/libexec/bin/python3"
+    "/usr/local/opt/python@3.13/libexec/bin/python3"
+    "/usr/local/opt/python@3.12/libexec/bin/python3"
+    "/usr/local/opt/python@3.11/libexec/bin/python3"
+    "/usr/local/opt/python@3.10/libexec/bin/python3"
   )
 
   local candidate

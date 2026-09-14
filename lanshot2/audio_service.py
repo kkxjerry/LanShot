@@ -525,7 +525,12 @@ def capture_submit(output: Path) -> int:
     atomic_text(output / "capture.log", "submitting\n")
     submitted = submit_question(output)
     atomic_text(output / "capture.log", "stopped\n")
-    print("问题已发送，历史已保存，悬浮窗继续运行")
+    latest_action = read_text(output / "voice_capture_command.txt").split(maxsplit=1)[0]
+    resumed = latest_action == "submit" and start(output, ensure_controller=False) == 0
+    if resumed:
+        print("问题已发送，历史已保存，下一轮采集已自动开始")
+    else:
+        print("问题已发送，历史已保存，悬浮窗继续运行")
     return 0 if submitted else 1
 
 
@@ -585,6 +590,7 @@ def control_loop(output: Path) -> int:
         hotkey_listener.failure_code or "listener_stopped"
     )
     (output / "voice_hotkey_status.txt").write_text(f"{hotkey_status}\n", encoding="utf-8")
+    next_overlay_check = time.monotonic()
     try:
         while not stopping:
             command = read_text(command_url)
@@ -599,6 +605,13 @@ def control_loop(output: Path) -> int:
                     capture_submit(output)
                 elif action == "quit":
                     break
+            if time.monotonic() >= next_overlay_check:
+                next_overlay_check = time.monotonic() + 1
+                if not overlay_process_id(output):
+                    try:
+                        start_overlay(output)
+                    except (OSError, RuntimeError, subprocess.SubprocessError):
+                        pass
             time.sleep(0.1)
     finally:
         hotkey_stop.set()

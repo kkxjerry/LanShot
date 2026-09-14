@@ -1235,8 +1235,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
         menu.addItem(NSMenuItem.separator())
-        let quitTitle = answerMonitor.isVoiceMode ? "退出语音显示" : "退出显示"
-        menu.addItem(NSMenuItem(title: quitTitle, action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
+        if !answerMonitor.isVoiceMode {
+            menu.addItem(
+                NSMenuItem(
+                    title: "退出显示",
+                    action: #selector(NSApplication.terminate(_:)),
+                    keyEquivalent: ""
+                )
+            )
+        }
         item.menu = menu
         statusItem = item
         answerMonitor.start()

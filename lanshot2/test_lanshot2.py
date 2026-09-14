@@ -52,6 +52,7 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn("MacF24Listener", source)
         self.assertIn('"voice_hotkey_status.txt"', source)
         self.assertIn('write_capture_command(output, "submit")', source)
+        self.assertIn("if not overlay_process_id(output):", source)
 
     def test_voice_overlay_shows_both_transcripts_and_menu_icon(self):
         source = (
@@ -66,6 +67,7 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('title: "开始采集"', source)
         self.assertIn('"F23 发送问题"', source)
         self.assertIn('title: "发送问题（F23）"', source)
+        self.assertIn("if !answerMonitor.isVoiceMode", source)
         self.assertIn("sharingType = .none", source)
 
     def test_voice_question_uses_text_only_kimi_request(self):
@@ -150,10 +152,13 @@ class LanShot2Tests(unittest.TestCase):
                 mock.patch.object(service, "process_id", return_value=123),
                 mock.patch.object(service, "stop_capture", return_value=True) as stop_capture,
                 mock.patch.object(service, "submit_question", return_value=True) as submit,
+                mock.patch.object(service, "start", return_value=0) as start,
             ):
+                (output / "voice_capture_command.txt").write_text("submit test\n", encoding="utf-8")
                 self.assertEqual(service.capture_submit(output), 0)
                 stop_capture.assert_called_once_with(output)
                 submit.assert_called_once_with(output)
+                start.assert_called_once_with(output, ensure_controller=False)
 
     def test_build_requires_stable_development_identity(self):
         source = (ROOT / "build_audio.command").read_text(encoding="utf-8")

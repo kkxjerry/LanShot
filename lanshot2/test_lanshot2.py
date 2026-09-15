@@ -18,6 +18,9 @@ class FakeResponse:
     def read(self, limit=-1):
         return self.body if limit < 0 else self.body[:limit]
 
+    def __iter__(self):
+        return iter(self.body.splitlines(keepends=True))
+
     def __enter__(self):
         return self
 
@@ -112,7 +115,7 @@ class LanShot2Tests(unittest.TestCase):
             os.environ,
             {
                 "DASHSCOPE_API_KEY": "stale-bailian",
-                "GOOGLE_AGENT_PLATFORM_API_KEY": "stale-google",
+                "GEMINI_API_KEY": "stale-google",
             },
         ):
             with mock.patch.object(service.subprocess, "run", return_value=bailian_result):
@@ -120,33 +123,46 @@ class LanShot2Tests(unittest.TestCase):
             with mock.patch.object(service.subprocess, "run", return_value=google_result):
                 self.assertEqual(service.load_google_api_key(), "keychain-google")
 
-    def test_gemini_question_uses_official_agent_platform_medium_thinking(self):
+    def test_gemini_question_uses_developer_api_high_thinking_stream(self):
         service = load_audio_service()
-        response = {
+        first = {
             "candidates": [
                 {
                     "content": {
                         "parts": [
                             {"thought": True, "text": "不可显示的思考"},
-                            {"text": "这是 Gemini 回答"},
+                            {"text": "这是 "},
                         ]
                     },
-                    "finishReason": "STOP",
                 }
+            ],
+        }
+        second = {
+            "candidates": [
+                {"content": {"parts": [{"text": "Gemini 回答"}]}, "finishReason": "STOP"}
             ],
             "usageMetadata": {"totalTokenCount": 123},
         }
-        opener = mock.Mock(return_value=FakeResponse(json.dumps(response).encode()))
+        body = (
+            "data: " + json.dumps(first, ensure_ascii=False) + "\n\n"
+            "data: " + json.dumps(second, ensure_ascii=False) + "\n\n"
+        ).encode()
+        opener = mock.Mock(return_value=FakeResponse(body))
         client = service.GeminiQuestionClient("google-secret", opener=opener)
+        updates = []
 
-        answer = client.ask(
+        answer = client.ask_stream(
             "本轮问题",
             "现场口答",
             history=[{"input": "上一题", "answer": "上一答"}],
+            on_update=updates.append,
         )
 
         self.assertEqual(answer, "这是 Gemini 回答")
+        self.assertEqual(updates, ["这是", "这是 Gemini 回答"])
         self.assertEqual(client.last_usage, {"totalTokenCount": 123})
+        self.assertTrue(client.last_timing["streaming"])
+        self.assertEqual(client.last_timing["event_count"], 2)
         request = opener.call_args.args[0]
         payload = json.loads(request.data)
         self.assertEqual(request.full_url, service.GEMINI_URL)
@@ -157,7 +173,7 @@ class LanShot2Tests(unittest.TestCase):
         self.assertEqual(payload["contents"][-1]["parts"][0]["text"], "本轮问题")
         self.assertEqual(
             payload["generationConfig"]["thinkingConfig"]["thinkingLevel"],
-            "MEDIUM",
+            "HIGH",
         )
         self.assertEqual(payload["generationConfig"]["maxOutputTokens"], 4096)
         self.assertEqual(opener.call_args.kwargs["timeout"], 20)
@@ -165,7 +181,7 @@ class LanShot2Tests(unittest.TestCase):
     def test_gemini_failure_falls_back_to_glm(self):
         service = load_audio_service()
         primary = mock.Mock(model="gemini-3.8-flash")
-        primary.ask.side_effect = RuntimeError("offline")
+        primary.ask_stream.side_effect = RuntimeError("offline")
         fallback = mock.Mock(model="glm-5.3")
         fallback.ask.return_value = "GLM 备用答案"
         client = service.FallbackQuestionClient(primary, fallback)
@@ -174,6 +190,34 @@ class LanShot2Tests(unittest.TestCase):
         self.assertTrue(client.fallback_used)
         self.assertEqual(client.model, "glm-5.3")
         fallback.ask.assert_called_once_with("问题", "提示", history=[])
+
+    def test_submission_writes_streaming_answer_before_completion(self):
+        service = load_audio_service()
+
+        class StreamingClient:
+            model = "gemini-3.8-flash"
+            fallback_used = False
+            last_timing = {"first_visible_ms": 1200, "complete_ms": 1800}
+
+            def ask_stream(self, question, prompt, history=None, on_update=None):
+                on_update("第一句")
+                self.partial_on_disk = (output / "answer.txt").read_text().strip()
+                on_update("第一句\n第二句")
+                return "第一句\n第二句"
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "audio"
+            output.mkdir()
+            (output / "interviewer.txt").write_text("请回答问题", encoding="utf-8")
+            (output / "capture_session_id.txt").write_text("stream-test\n", encoding="utf-8")
+            client = StreamingClient()
+
+            self.assertTrue(service.submit_question(output, client=client))
+
+            self.assertEqual(client.partial_on_disk, "第一句")
+            self.assertEqual((output / "answer.txt").read_text().strip(), "第一句\n第二句")
+            status = json.loads((output / "question_status.json").read_text())
+            self.assertEqual(status["generation"]["first_visible_ms"], 1200)
 
     def test_voice_prompt_requires_short_spoken_answer(self):
         prompt = (ROOT / "voice_question_prompt.txt").read_text(encoding="utf-8")

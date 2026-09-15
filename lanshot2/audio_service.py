@@ -39,8 +39,8 @@ VOICE_PROMPT = ROOT / "voice_question_prompt.txt"
 BAILIAN_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 BAILIAN_FALLBACK_MODEL = "glm-5.3"
 GEMINI_URL = (
-    "https://aiplatform.googleapis.com/v1/publishers/google/models/"
-    "gemini-3.8-flash:generateContent"
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-3.8-flash:streamGenerateContent?alt=sse"
 )
 VOICE_MODEL = "gemini-3.8-flash"
 
@@ -179,7 +179,7 @@ def load_google_api_key() -> str:
                 "-s",
                 "com.lanshot.google",
                 "-a",
-                "GOOGLE_AGENT_PLATFORM_API_KEY",
+                "GEMINI_API_KEY",
                 "-w",
             ],
             capture_output=True,
@@ -190,9 +190,12 @@ def load_google_api_key() -> str:
         key = result.stdout.strip() if result.returncode == 0 else ""
     if key:
         return key
-    key = os.environ.get("GOOGLE_AGENT_PLATFORM_API_KEY", "").strip()
+    key = (
+        os.environ.get("GEMINI_API_KEY", "").strip()
+        or os.environ.get("GOOGLE_API_KEY", "").strip()
+    )
     if not key:
-        raise RuntimeError("未找到 Google Agent Platform API Key")
+        raise RuntimeError("未找到 Gemini Developer API Key")
     return key
 
 
@@ -228,7 +231,7 @@ class GeminiQuestionClient:
         opener=None,
         url: str = GEMINI_URL,
         model: str = VOICE_MODEL,
-        thinking_level: str = "MEDIUM",
+        thinking_level: str = "HIGH",
     ) -> None:
         if not api_key.strip():
             raise ValueError("Google API key is empty")
@@ -240,8 +243,19 @@ class GeminiQuestionClient:
         self.model = model
         self.thinking_level = thinking_level
         self.last_usage: dict = {}
+        self.last_timing: dict = {}
 
     def ask(self, question: str, prompt: str, history: list[dict] | None = None) -> str:
+        return self.ask_stream(question, prompt, history=history)
+
+    def ask_stream(
+        self,
+        question: str,
+        prompt: str,
+        history: list[dict] | None = None,
+        *,
+        on_update=None,
+    ) -> str:
         contents = []
         for item in history or []:
             contents.append({"role": "user", "parts": [{"text": item["input"]}]})
@@ -265,29 +279,67 @@ class GeminiQuestionClient:
             },
             method="POST",
         )
+        started = time.monotonic()
+        first_visible_ms = None
+        answer = ""
+        usage: dict = {}
+        event_count = 0
+        received_bytes = 0
         try:
             with self.opener(request, timeout=20) as response:
-                body = response.read(4 * 1024 * 1024)
+                for raw_line in response:
+                    received_bytes += len(raw_line)
+                    if received_bytes > 4 * 1024 * 1024:
+                        raise RuntimeError("Gemini 返回内容过大")
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    encoded_event = line[5:].strip()
+                    if not encoded_event or encoded_event == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(encoded_event)
+                    except json.JSONDecodeError as error:
+                        raise RuntimeError("Gemini 返回了无效流数据") from error
+                    if not isinstance(event, dict):
+                        raise RuntimeError("Gemini 返回了无效流事件")
+                    event_count += 1
+                    candidate_usage = event.get("usageMetadata", {})
+                    if isinstance(candidate_usage, dict) and candidate_usage:
+                        usage = candidate_usage
+                    for candidate in event.get("candidates") or []:
+                        if not isinstance(candidate, dict):
+                            continue
+                        content = candidate.get("content", {})
+                        parts = content.get("parts", []) if isinstance(content, dict) else []
+                        for part in parts:
+                            if not isinstance(part, dict) or part.get("thought"):
+                                continue
+                            text = part.get("text", "")
+                            if not isinstance(text, str) or not text:
+                                continue
+                            if first_visible_ms is None:
+                                first_visible_ms = round((time.monotonic() - started) * 1000)
+                            answer += text
+                            if on_update is not None:
+                                on_update(answer.strip())
         except urllib.error.HTTPError as error:
             status = error.code
             error.close()
             raise RuntimeError(f"Gemini 请求失败，HTTP {status}") from error
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise RuntimeError("无法连接 Gemini 服务") from error
-        try:
-            result = json.loads(body)
-            parts = result["candidates"][0]["content"]["parts"]
-            answer = "".join(
-                part.get("text", "")
-                for part in parts
-                if isinstance(part, dict) and not part.get("thought")
-            )
-            usage = result.get("usageMetadata", {})
-        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, IndexError, TypeError) as error:
-            raise RuntimeError("Gemini 返回了无效结果") from error
         if not isinstance(answer, str) or not answer.strip():
             raise RuntimeError("Gemini 没有返回答案")
-        self.last_usage = usage if isinstance(usage, dict) else {}
+        self.last_usage = usage
+        self.last_timing = {
+            "provider": "gemini_developer_api",
+            "streaming": True,
+            "thinking_level": self.thinking_level,
+            "first_visible_ms": first_visible_ms,
+            "complete_ms": round((time.monotonic() - started) * 1000),
+            "event_count": event_count,
+        }
         return answer.strip()
 
 
@@ -353,16 +405,46 @@ class FallbackQuestionClient:
         self.fallback = fallback
         self.model = primary.model
         self.fallback_used = False
+        self.last_timing: dict = {}
+        self.last_usage: dict = {}
 
     def ask(self, question: str, prompt: str, history: list[dict] | None = None) -> str:
+        return self.ask_stream(question, prompt, history=history)
+
+    def ask_stream(
+        self,
+        question: str,
+        prompt: str,
+        history: list[dict] | None = None,
+        *,
+        on_update=None,
+    ) -> str:
         self.model = self.primary.model
         self.fallback_used = False
+        started = time.monotonic()
         try:
-            return self.primary.ask(question, prompt, history=history)
+            answer = self.primary.ask_stream(
+                question,
+                prompt,
+                history=history,
+                on_update=on_update,
+            )
+            self.last_timing = self.primary.last_timing
+            self.last_usage = self.primary.last_usage
+            return answer
         except RuntimeError:
             self.model = self.fallback.model
             self.fallback_used = True
-            return self.fallback.ask(question, prompt, history=history)
+            answer = self.fallback.ask(question, prompt, history=history)
+            self.last_timing = {
+                "provider": "bailian_fallback",
+                "streaming": False,
+                "complete_ms": round((time.monotonic() - started) * 1000),
+            }
+            self.last_usage = {}
+            if on_update is not None:
+                on_update(answer)
+            return answer
 
 
 QuestionClient = VoiceQuestionClient | GeminiQuestionClient | FallbackQuestionClient
@@ -425,6 +507,7 @@ def append_question_history(
     conversation_id: str | None = None,
     knowledge: dict | None = None,
     model: str | None = None,
+    generation: dict | None = None,
 ) -> None:
     history_file = output.parent / "conversation_history.jsonl"
     history_file.parent.mkdir(parents=True, exist_ok=True)
@@ -439,6 +522,8 @@ def append_question_history(
         item["knowledge"] = knowledge
     if model:
         item["model"] = model
+    if generation:
+        item["generation"] = generation
     with history_file.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(item, ensure_ascii=False) + "\n")
         stream.flush()
@@ -539,11 +624,18 @@ def submit_snapshot(
     try:
         prompt = VOICE_PROMPT.read_text(encoding="utf-8").strip()
         active_client = client or default_question_client()
-        answer = active_client.ask(
-            ground_text(question, knowledge),
-            prompt,
-            history=load_question_history(output, conversation_id=snapshot.conversation_id),
-        )
+        grounded_question = ground_text(question, knowledge)
+        history = load_question_history(output, conversation_id=snapshot.conversation_id)
+        streaming_ask = getattr(active_client, "ask_stream", None)
+        if callable(streaming_ask):
+            answer = streaming_ask(
+                grounded_question,
+                prompt,
+                history=history,
+                on_update=lambda partial: atomic_text(output / "answer.txt", f"{partial}\n"),
+            )
+        else:
+            answer = active_client.ask(grounded_question, prompt, history=history)
     except (OSError, RuntimeError) as error:
         message = f"提问失败：{error}"
         atomic_text(output / "answer.txt", f"{message}\n")
@@ -565,6 +657,7 @@ def submit_snapshot(
     atomic_text(output / "answer.txt", f"{answer}\n")
     model_used = getattr(active_client, "model", VOICE_MODEL)
     fallback_used = bool(getattr(active_client, "fallback_used", False))
+    generation = getattr(active_client, "last_timing", {})
     atomic_text(
         output / "question_status.json",
         json.dumps(
@@ -572,6 +665,7 @@ def submit_snapshot(
                 "status": "complete",
                 "model": model_used,
                 "fallback_used": fallback_used,
+                "generation": generation,
                 "session_id": snapshot.session_id,
                 "knowledge": knowledge.summary(),
                 "at": time.time(),
@@ -588,6 +682,7 @@ def submit_snapshot(
         conversation_id=snapshot.conversation_id,
         knowledge=knowledge.summary(),
         model=model_used,
+        generation=generation,
     )
     update_snapshot_archive(snapshot, answer)
     return True

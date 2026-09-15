@@ -13,7 +13,7 @@
 - “开始采集”和“停止采集”只由界面按钮控制；`F23` 专门用于立即结束当前识别并发送问题。
 - 悬浮字幕沿用 LanShot 的 `sharingType = .none` 窗口，不进入 macOS 系统截图。
 - 两路使用相互独立的百炼 `qwen-audio-3.0-asr-flash-streaming` 连接，不混流。
-- 语音问题默认使用 Google Agent Platform 官方 `gemini-3.8-flash` 中等推理回答；Google 凭据或请求不可用时，自动回退到百炼 `glm-5.3`。
+- 语音问题默认使用 Gemini Developer API 的 `gemini-3.8-flash` 高推理，生成文字流式追加到悬浮窗；Gemini 凭据或请求不可用时，自动回退到百炼 `glm-5.3`。
 - 可选的百炼知识检索在回答前执行；空召回、超时或错误不会阻断原回答。尚未包含 Skill、声纹识别或 TTS。
 
 运行数据位于：
@@ -36,6 +36,6 @@
 
 程序不会自行开始监听。统一入口打开后保持“尚未采集”；只有点击“开始采集”才会录音。点击“停止采集”只停止并保存。按 `F23` 会尽快停止当前识别并固化两路快照，随后立即恢复下一轮采集，同时在后台把两份文字发送给大模型并将回答写入 `answer.txt`。主控制进程不会退出，悬浮窗异常关闭时会自动恢复；菜单栏中的“退出 LanShot”或“全部停止”会保存当前记录并完整退出。开始或停止下一轮不会清空屏幕上的上一份答案、每轮归档或持续对话历史。API Key 从环境变量或 macOS 钥匙串读取，不写入项目和日志。
 
-运行期间可通过菜单栏“模式”直接切换到截屏模式；截屏模式菜单也可直接切回面试模式。Google 凭据存在 macOS 钥匙串的 `com.lanshot.google / GOOGLE_AGENT_PLATFORM_API_KEY`，不写入项目和日志。本地 `127.0.0.1:7890` 代理可用时自动使用；也可通过 `LANSHOT_GOOGLE_PROXY` 显式设置代理 URL 或设为 `direct`。
+运行期间可通过菜单栏“模式”直接切换到截屏模式；截屏模式菜单也可直接切回面试模式。Google 凭据存在 macOS 钥匙串的 `com.lanshot.google / GEMINI_API_KEY`，不写入项目和日志。本地 `127.0.0.1:7890` 代理可用时自动使用；也可通过 `LANSHOT_GOOGLE_PROXY` 显式设置代理 URL 或设为 `direct`。
 
 知识库配置使用 `../unified/configure_knowledge.command`。最新检索状态写入 `knowledge_status.json`，每轮完整召回写入对应的 `*-knowledge.json`，均不包含 API Key。

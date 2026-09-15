@@ -71,7 +71,7 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('"shutdown \\(UUID().uuidString.lowercased())', source)
         self.assertIn("sharingType = .none", source)
 
-    def test_voice_question_uses_text_only_kimi_request(self):
+    def test_voice_question_uses_text_only_glm_request(self):
         service = load_audio_service()
         response = {"choices": [{"message": {"content": "这是回答"}}]}
         opener = mock.Mock(return_value=FakeResponse(json.dumps(response).encode()))
@@ -87,8 +87,9 @@ class LanShot2Tests(unittest.TestCase):
         )
         request = opener.call_args.args[0]
         payload = json.loads(request.data)
-        self.assertEqual(payload["model"], "kimi-k2.7-code")
-        self.assertFalse(payload["enable_thinking"])
+        self.assertEqual(payload["model"], "glm-5.3")
+        self.assertTrue(payload["enable_thinking"])
+        self.assertEqual(payload["reasoning_effort"], "low")
         self.assertEqual(payload["messages"][1], {"role": "user", "content": "上一题"})
         self.assertEqual(payload["messages"][2], {"role": "assistant", "content": "上一题答案"})
         self.assertEqual(payload["messages"][3], {"role": "user", "content": "什么是 GIL？"})

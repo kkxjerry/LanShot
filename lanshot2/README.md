@@ -13,7 +13,7 @@
 - “开始采集”和“停止采集”只由界面按钮控制；`F23` 专门用于立即结束当前识别并发送问题。
 - 悬浮字幕沿用 LanShot 的 `sharingType = .none` 窗口，不进入 macOS 系统截图。
 - 两路使用相互独立的百炼 `qwen-audio-3.0-asr-flash-streaming` 连接，不混流。
-- 语音问题使用百炼 `kimi-k2.7-code` 回答；暂不包含 RAG、Skill、声纹识别或 TTS。
+- 语音问题使用百炼 `glm-5.3` 回答，并采用 `reasoning_effort=low` 降低现场延迟；暂不包含 RAG、Skill、声纹识别或 TTS。
 
 运行数据位于：
 

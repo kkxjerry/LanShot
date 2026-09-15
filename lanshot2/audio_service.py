@@ -24,7 +24,7 @@ OVERLAY_EXECUTABLE = OVERLAY_APP / "Contents/MacOS/CaptureExclusionDemo"
 DEFAULT_OUTPUT = Path.home() / "Library/Application Support/LanShot2/audio"
 VOICE_PROMPT = ROOT / "voice_question_prompt.txt"
 BAILIAN_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-VOICE_MODEL = "kimi-k2.7-code"
+VOICE_MODEL = "glm-5.3"
 
 
 @dataclass(frozen=True)
@@ -102,7 +102,8 @@ class VoiceQuestionClient:
         payload = {
             "model": self.model,
             "messages": messages,
-            "enable_thinking": False,
+            "enable_thinking": True,
+            "reasoning_effort": "low",
             "stream": False,
             "max_tokens": 1600,
         }

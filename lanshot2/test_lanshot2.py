@@ -67,7 +67,8 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('title: "开始采集"', source)
         self.assertIn('"F23 发送问题"', source)
         self.assertIn('title: "发送问题（F23）"', source)
-        self.assertIn("if !answerMonitor.isVoiceMode", source)
+        self.assertIn('title: "退出 LanShot"', source)
+        self.assertIn('"shutdown \\(UUID().uuidString.lowercased())', source)
         self.assertIn("sharingType = .none", source)
 
     def test_voice_question_uses_text_only_kimi_request(self):
@@ -173,6 +174,23 @@ class LanShot2Tests(unittest.TestCase):
                 self.assertIs(submissions.get_nowait(), snapshot)
                 submit.assert_not_called()
                 start.assert_called_once_with(output, ensure_controller=False)
+
+    def test_overlay_shutdown_stops_audio_and_overlay(self):
+        service = load_audio_service()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "interviewer.txt").write_text("系统问题", encoding="utf-8")
+            (output / "me.txt").write_text("麦克风补充", encoding="utf-8")
+            with (
+                mock.patch.object(service, "process_id", return_value=123),
+                mock.patch.object(service, "stop_capture", return_value=True) as stop_capture,
+                mock.patch.object(service, "archive_capture") as archive,
+                mock.patch.object(service, "stop_overlay", return_value=True) as stop_overlay,
+            ):
+                self.assertTrue(service.shutdown_from_overlay(output))
+                stop_capture.assert_called_once_with(output)
+                archive.assert_called_once()
+                stop_overlay.assert_called_once_with(output)
 
     def test_build_requires_stable_development_identity(self):
         source = (ROOT / "build_audio.command").read_text(encoding="utf-8")

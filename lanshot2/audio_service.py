@@ -338,7 +338,7 @@ def control_process_id(output: Path) -> int | None:
 
 
 def write_capture_command(output: Path, action: str) -> None:
-    if action not in ("start", "stop", "submit", "quit"):
+    if action not in ("start", "stop", "submit", "shutdown", "quit"):
         raise ValueError("unsupported capture command")
     command = output / "voice_capture_command.txt"
     temporary = command.with_suffix(".tmp")
@@ -627,6 +627,24 @@ def capture_submit(
     return 0 if submitted else 1
 
 
+def shutdown_from_overlay(output: Path) -> bool:
+    was_running = process_id(output) is not None
+    audio_stopped = stop_capture(output)
+    if audio_stopped and was_running:
+        archive_capture(
+            output,
+            combined_transcript(
+                read_text(output / "interviewer.txt"),
+                read_text(output / "me.txt"),
+            ),
+            "退出前已保存，本轮未提交。",
+        )
+    elif audio_stopped:
+        archive_pending_capture(output)
+    overlay_stopped = stop_overlay(output)
+    return audio_stopped and overlay_stopped
+
+
 def control_loop(output: Path) -> int:
     output.mkdir(parents=True, exist_ok=True)
     pid_url = output / "voice_control.pid"
@@ -732,6 +750,9 @@ def control_loop(output: Path) -> int:
                     capture_stop(output)
                 elif action == "submit":
                     capture_submit(output, submission_queue=submissions)
+                elif action == "shutdown":
+                    shutdown_from_overlay(output)
+                    break
                 elif action == "quit":
                     break
             if time.monotonic() >= next_overlay_check:

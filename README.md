@@ -55,5 +55,6 @@ open install.command
 - `unified/LanShot.command`：选择截屏、语音或停止模式。
 - `unified/voice_mode.command`：直接进入语音待机模式。
 - `unified/stop_all.command`：停止所有 LanShot 进程。
+- 菜单栏麦克风图标中的“退出 LanShot”：保存当前记录并停止采集、悬浮窗、F23 和控制器。
 
 截屏模式还依赖本机截图服务配置；`install.command` 当前优先完成可移植的语音模式安装。

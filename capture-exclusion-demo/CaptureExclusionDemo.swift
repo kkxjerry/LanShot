@@ -208,6 +208,20 @@ final class LatestAnswerMonitor {
         )
     }
 
+    func quitVoiceMode() {
+        guard isVoiceMode else { return }
+        try? "quitting\n".write(
+            to: displayDirectory.appendingPathComponent("capture.log"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try? "shutdown \(UUID().uuidString.lowercased())\n".write(
+            to: displayDirectory.appendingPathComponent("voice_capture_command.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
     private func writeJSON(_ value: [String: Any], name: String) {
         guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) else { return }
         do {
@@ -330,6 +344,8 @@ final class LatestAnswerMonitor {
             return "正在停止并保存本轮..."
         case "submitting":
             return "正在停止识别并发送问题..."
+        case "quitting":
+            return "正在保存并退出 LanShot..."
         case let value where value.hasPrefix("failed:"):
             return "采集失败 | 点击开始采集"
         default:
@@ -1235,7 +1251,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
         menu.addItem(NSMenuItem.separator())
-        if !answerMonitor.isVoiceMode {
+        if answerMonitor.isVoiceMode {
+            let quitItem = NSMenuItem(
+                title: "退出 LanShot",
+                action: #selector(quitVoiceMode),
+                keyEquivalent: ""
+            )
+            quitItem.target = self
+            menu.addItem(quitItem)
+        } else {
             menu.addItem(
                 NSMenuItem(
                     title: "退出显示",
@@ -1258,6 +1282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func manualCapture() { answerMonitor.requestCapture() }
     @objc private func toggleVoiceCapture() { answerMonitor.toggleVoiceCapture() }
     @objc private func submitVoiceQuestion() { answerMonitor.submitVoiceQuestion() }
+    @objc private func quitVoiceMode() { answerMonitor.quitVoiceMode() }
     @objc private func togglePanel() { panel?.toggleVisibility() }
     @objc private func centerPanel() { panel?.centerNearTop() }
     @objc private func openSettingsMenu() { showSettings() }

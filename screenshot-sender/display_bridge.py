@@ -8,7 +8,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 import signal
+import sys
 import threading
 import time
 import uuid
@@ -30,6 +32,32 @@ class DisplayBridge:
         with self.store.tx() as con:
             raw = self.store._meta(con,"display_previous")
             self.previous = json.loads(raw) if raw else None
+        self.last_mode_request = ""
+
+    def process_mode_request(self) -> None:
+        path = self.directory / "mode_request.json"
+        try:
+            request = json.loads(path.read_text(encoding="utf-8"))
+            request_id = str(uuid.UUID(request["id"]))
+            if request_id == self.last_mode_request:
+                return
+            if request.get("mode") != "voice" or not 0 <= time.time() - float(request["at"]) <= 60:
+                return
+            self.last_mode_request = request_id
+            controller = Path(__file__).resolve().parents[1] / "unified/mode_controller.py"
+            with (self.directory / "mode-switch.log").open("ab") as stream:
+                subprocess.Popen(
+                    [sys.executable, str(controller), "voice"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+        except FileNotFoundError:
+            return
+        except Exception as error:
+            trace("DISPLAY_MODE_SWITCH_FAILED", **error_info(error))
 
     def process_capture_request(self) -> None:
         path = self.directory / "capture_request.json"
@@ -47,6 +75,7 @@ class DisplayBridge:
             trace("DISPLAY_CAPTURE_REQUEST_FAILED",**error_info(error))
 
     def step(self) -> dict:
+        self.process_mode_request()
         self.process_capture_request()
         snap = self.store.snapshot()
         current = snap["current"]

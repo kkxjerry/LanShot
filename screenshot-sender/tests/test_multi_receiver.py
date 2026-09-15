@@ -300,6 +300,12 @@ class NativeDisplayBridgeTests(unittest.TestCase):
         state=ReceiverState(self.root/'receiver/latest.jpg');self.router_instance.local_state=state
         directory=self.root/'display';directory.mkdir();(directory/'capture_request.json').write_text(json.dumps({'id':str(uuid.uuid4()),'at':time.time()-600}))
         self.bridge.process_capture_request();self.assertEqual(state.store.snapshot()['counts'],{})
+    def test_mode_switch_request_launches_voice_once(self):
+        directory=self.root/'display';directory.mkdir();request_id=str(uuid.uuid4())
+        (directory/'mode_request.json').write_text(json.dumps({'id':request_id,'at':time.time(),'mode':'voice'}))
+        with mock.patch('display_bridge.subprocess.Popen') as launch:
+            self.bridge.process_mode_request();self.bridge.process_mode_request()
+        self.assertEqual(launch.call_count,1);self.assertIn('voice',launch.call_args.args[0])
 
 class SettingsAndCleanupTests(unittest.TestCase):
     def setUp(self):

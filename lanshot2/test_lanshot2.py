@@ -49,6 +49,8 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('"capture-stop"', source)
         self.assertIn('"capture-submit"', source)
         self.assertIn('"control-loop"', source)
+        self.assertIn('"new-session"', source)
+        self.assertIn('"switch-screenshot"', source)
         self.assertIn("MacF24Listener", source)
         self.assertIn('"voice_hotkey_status.txt"', source)
         self.assertIn('write_capture_command(output, "submit")', source)
@@ -68,6 +70,11 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('"F23 发送问题"', source)
         self.assertIn('title: "发送问题（F23）"', source)
         self.assertIn('title: "退出 LanShot"', source)
+        self.assertIn('title: "会话管理..."', source)
+        self.assertIn('title: "继续所选会话"', source)
+        self.assertIn('title: "截屏模式"', source)
+        self.assertIn('title: "面试模式"', source)
+        self.assertIn("SessionManagerWindowController", source)
         self.assertIn('"shutdown \\(UUID().uuidString.lowercased())', source)
         self.assertIn("sharingType = .none", source)
 
@@ -159,6 +166,7 @@ class LanShot2Tests(unittest.TestCase):
             ):
                 snapshot = service.QuestionSnapshot(
                     "session-test",
+                    "conversation-test",
                     "session-test",
                     output,
                     "系统问题",
@@ -192,6 +200,62 @@ class LanShot2Tests(unittest.TestCase):
                 stop_capture.assert_called_once_with(output)
                 archive.assert_called_once()
                 stop_overlay.assert_called_once_with(output)
+
+    def test_conversation_sessions_are_persistent_and_isolated(self):
+        service = load_audio_service()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "audio"
+            output.mkdir()
+            first = service.ensure_conversation_session(output)
+            service.append_question_history(
+                output,
+                "第一题",
+                "第一答",
+                capture_session_id="capture-1",
+                conversation_id=first,
+            )
+            second = service.create_conversation_session(output)["id"]
+            service.append_question_history(
+                output,
+                "第二题",
+                "第二答",
+                capture_session_id="capture-2",
+                conversation_id=second,
+            )
+
+            self.assertNotEqual(first, second)
+            self.assertEqual(service.current_conversation_id(output), second)
+            self.assertEqual(
+                [item["answer"] for item in service.load_question_history(
+                    output,
+                    conversation_id=second,
+                )],
+                ["第二答"],
+            )
+            self.assertEqual(
+                len((output.parent / "sessions.jsonl").read_text(encoding="utf-8").splitlines()),
+                2,
+            )
+            service.activate_conversation_session(output, first)
+            self.assertEqual(service.current_conversation_id(output), first)
+            self.assertEqual(
+                [item["answer"] for item in service.load_question_history(
+                    output,
+                    conversation_id=first,
+                )],
+                ["第一答"],
+            )
+
+    def test_voice_mode_switch_spawns_unified_screenshot_controller(self):
+        service = load_audio_service()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "audio"
+            output.mkdir()
+            with mock.patch.object(service.subprocess, "Popen") as launch:
+                service.spawn_mode_switch(output, "screenshot")
+            command = launch.call_args.args[0]
+            self.assertIn("mode_controller.py", command[1])
+            self.assertEqual(command[-1], "screenshot")
 
     def test_build_requires_stable_development_identity(self):
         source = (ROOT / "build_audio.command").read_text(encoding="utf-8")

@@ -7,7 +7,7 @@ PYTHON="$(lanshot_python)"
 choice=$(/usr/bin/osascript <<'APPLESCRIPT'
 tell application "System Events"
     activate
-    set selectedMode to button returned of (display dialog "选择 LanShot 运行模式" with title "LanShot" buttons {"全部停止", "语音模式", "截屏模式"} default button "截屏模式")
+    set selectedMode to button returned of (display dialog "选择 LanShot 运行模式" with title "LanShot" buttons {"全部停止", "面试模式", "截屏模式"} default button "截屏模式")
     return selectedMode
 end tell
 APPLESCRIPT
@@ -15,7 +15,7 @@ APPLESCRIPT
 
 case "$choice" in
   "截屏模式") mode="screenshot" ;;
-  "语音模式") mode="voice" ;;
+  "面试模式") mode="voice" ;;
   *) mode="stop" ;;
 esac
 

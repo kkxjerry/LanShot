@@ -136,6 +136,9 @@ final class LatestAnswerMonitor {
     var onPageUp: (() -> Void)?
     var onMoveToMouse: (() -> Void)?
     var onToggleVisibility: (() -> Void)?
+    var sessionRootURL: URL? {
+        isVoiceMode ? displayDirectory.deletingLastPathComponent() : nil
+    }
 
     init(url: URL? = nil, pageCommandURL: URL? = nil) {
         let arguments = ProcessInfo.processInfo.arguments
@@ -216,6 +219,51 @@ final class LatestAnswerMonitor {
             encoding: .utf8
         )
         try? "shutdown \(UUID().uuidString.lowercased())\n".write(
+            to: displayDirectory.appendingPathComponent("voice_capture_command.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    func requestModeSwitch(to mode: String) {
+        guard mode == "voice" || mode == "screenshot" else { return }
+        if isVoiceMode {
+            guard mode == "screenshot" else { return }
+            try? "switching\n".write(
+                to: displayDirectory.appendingPathComponent("capture.log"),
+                atomically: true,
+                encoding: .utf8
+            )
+            try? "switch-screenshot \(UUID().uuidString.lowercased())\n".write(
+                to: displayDirectory.appendingPathComponent("voice_capture_command.txt"),
+                atomically: true,
+                encoding: .utf8
+            )
+            return
+        }
+        guard mode == "voice" else { return }
+        writeJSON(
+            [
+                "id": UUID().uuidString.lowercased(),
+                "at": Date().timeIntervalSince1970,
+                "mode": "voice",
+            ],
+            name: "mode_request.json"
+        )
+    }
+
+    func requestNewSession() {
+        guard isVoiceMode else { return }
+        try? "new-session \(UUID().uuidString.lowercased())\n".write(
+            to: displayDirectory.appendingPathComponent("voice_capture_command.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    func requestActivateSession(_ sessionID: String) {
+        guard isVoiceMode, !sessionID.isEmpty, !sessionID.contains(" ") else { return }
+        try? "activate-session \(sessionID) \(UUID().uuidString.lowercased())\n".write(
             to: displayDirectory.appendingPathComponent("voice_capture_command.txt"),
             atomically: true,
             encoding: .utf8
@@ -346,6 +394,8 @@ final class LatestAnswerMonitor {
             return "正在停止识别并发送问题..."
         case "quitting":
             return "正在保存并退出 LanShot..."
+        case "switching":
+            return "正在切换到截屏模式..."
         case let value where value.hasPrefix("failed:"):
             return "采集失败 | 点击开始采集"
         default:
@@ -1160,12 +1210,320 @@ final class SettingsWindowController: NSWindowController {
     }
 }
 
+private struct ConversationMessage {
+    let at: Date
+    let input: String
+    let answer: String
+}
+
+private struct ConversationSession {
+    let id: String
+    var title: String
+    var createdAt: Date
+    var messages: [ConversationMessage]
+    var isCurrent: Bool
+}
+
+@MainActor
+final class SessionManagerViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+    private let rootURL: URL
+    private let onNewSession: () -> Void
+    private let onActivateSession: (String) -> Void
+    private var sessions: [ConversationSession] = []
+    private var tableView: NSTableView!
+    private var detailTextView: NSTextView!
+
+    init(
+        rootURL: URL,
+        onNewSession: @escaping () -> Void,
+        onActivateSession: @escaping (String) -> Void
+    ) {
+        self.rootURL = rootURL
+        self.onNewSession = onNewSession
+        self.onActivateSession = onActivateSession
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func loadView() {
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 820, height: 560))
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        let newButton = NSButton(title: "新建会话", target: self, action: #selector(createSession))
+        let activateButton = NSButton(
+            title: "继续所选会话",
+            target: self,
+            action: #selector(activateSelectedSession)
+        )
+        let refreshButton = NSButton(title: "刷新", target: self, action: #selector(reloadSessions))
+        let folderButton = NSButton(title: "打开历史目录", target: self, action: #selector(openHistory))
+        let toolbar = NSStackView(views: [newButton, activateButton, refreshButton, folderButton])
+        toolbar.orientation = .horizontal
+        toolbar.spacing = 8
+        toolbar.translatesAutoresizingMaskIntoConstraints = false
+
+        tableView = NSTableView(frame: .zero)
+        tableView.headerView = nil
+        tableView.rowHeight = 46
+        tableView.delegate = self
+        tableView.dataSource = self
+        tableView.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("session")))
+        let tableScroll = NSScrollView(frame: .zero)
+        tableScroll.documentView = tableView
+        tableScroll.hasVerticalScroller = true
+        tableScroll.borderType = .bezelBorder
+
+        detailTextView = NSTextView(frame: NSRect(x: 0, y: 0, width: 520, height: 520))
+        detailTextView.isEditable = false
+        detailTextView.isSelectable = true
+        detailTextView.isRichText = false
+        detailTextView.isHorizontallyResizable = false
+        detailTextView.isVerticallyResizable = true
+        detailTextView.autoresizingMask = [.width]
+        detailTextView.font = .systemFont(ofSize: 14)
+        detailTextView.textContainerInset = NSSize(width: 12, height: 12)
+        detailTextView.textContainer?.widthTracksTextView = true
+        detailTextView.textContainer?.containerSize = NSSize(
+            width: 0,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        let detailScroll = NSScrollView(frame: .zero)
+        detailScroll.documentView = detailTextView
+        detailScroll.hasVerticalScroller = true
+        detailScroll.borderType = .bezelBorder
+
+        let splitView = NSSplitView(frame: .zero)
+        splitView.isVertical = true
+        splitView.dividerStyle = .thin
+        splitView.translatesAutoresizingMaskIntoConstraints = false
+        splitView.addArrangedSubview(tableScroll)
+        splitView.addArrangedSubview(detailScroll)
+        tableScroll.widthAnchor.constraint(equalToConstant: 260).isActive = true
+
+        view.addSubview(toolbar)
+        view.addSubview(splitView)
+        NSLayoutConstraint.activate([
+            toolbar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
+            toolbar.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
+            splitView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
+            splitView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
+            splitView.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 10),
+            splitView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -14),
+        ])
+        reloadSessions()
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        sessions.count
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        viewFor tableColumn: NSTableColumn?,
+        row: Int
+    ) -> NSView? {
+        guard sessions.indices.contains(row) else { return nil }
+        let session = sessions[row]
+        let cell = NSTableCellView(frame: .zero)
+        let current = session.isCurrent ? "当前 · " : ""
+        let label = NSTextField(
+            labelWithString: "\(current)\(session.title)\n\(session.messages.count) 个问题"
+        )
+        label.maximumNumberOfLines = 2
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(label)
+        cell.textField = label
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
+            label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+            label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
+        return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        showSelectedSession()
+    }
+
+    @objc func reloadSessions() {
+        let previousID = selectedSession?.id
+        sessions = loadSessions()
+        tableView?.reloadData()
+        let selectedIndex = sessions.firstIndex { $0.id == previousID }
+            ?? sessions.firstIndex { $0.isCurrent }
+            ?? (sessions.isEmpty ? nil : 0)
+        if let selectedIndex {
+            tableView.selectRowIndexes(IndexSet(integer: selectedIndex), byExtendingSelection: false)
+        } else {
+            detailTextView?.string = "尚无会话。"
+        }
+        showSelectedSession()
+    }
+
+    private var selectedSession: ConversationSession? {
+        guard tableView != nil, sessions.indices.contains(tableView.selectedRow) else { return nil }
+        return sessions[tableView.selectedRow]
+    }
+
+    private func loadSessions() -> [ConversationSession] {
+        var records: [String: ConversationSession] = [:]
+        let currentID = readCurrentSessionID()
+        for value in readJSONLines(rootURL.appendingPathComponent("sessions.jsonl")) {
+            guard let id = value["id"] as? String else { continue }
+            let created = value["created_at"] as? Double ?? 0
+            records[id] = ConversationSession(
+                id: id,
+                title: value["title"] as? String ?? id,
+                createdAt: Date(timeIntervalSince1970: created),
+                messages: [],
+                isCurrent: id == currentID
+            )
+        }
+        for value in readJSONLines(rootURL.appendingPathComponent("conversation_history.jsonl")) {
+            let id = value["conversation_id"] as? String ?? "legacy"
+            let created = value["at"] as? Double ?? 0
+            var session = records[id] ?? ConversationSession(
+                id: id,
+                title: id == "legacy" ? "旧版历史" : id,
+                createdAt: Date(timeIntervalSince1970: created),
+                messages: [],
+                isCurrent: id == currentID
+            )
+            session.messages.append(
+                ConversationMessage(
+                    at: Date(timeIntervalSince1970: created),
+                    input: value["input"] as? String ?? "",
+                    answer: value["answer"] as? String ?? ""
+                )
+            )
+            records[id] = session
+        }
+        return records.values.sorted { left, right in
+            if left.isCurrent != right.isCurrent { return left.isCurrent }
+            return left.createdAt > right.createdAt
+        }
+    }
+
+    private func readCurrentSessionID() -> String {
+        let path = rootURL.appendingPathComponent("current_session.json")
+        guard let data = try? Data(contentsOf: path),
+              let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ""
+        }
+        return value["id"] as? String ?? ""
+    }
+
+    private func readJSONLines(_ url: URL) -> [[String: Any]] {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").compactMap { line in
+            guard let data = String(line).data(using: .utf8) else { return nil }
+            return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        }
+    }
+
+    private func showSelectedSession() {
+        guard let session = selectedSession else { return }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        var sections = [
+            session.title,
+            "创建时间：\(formatter.string(from: session.createdAt))",
+            "问题数量：\(session.messages.count)",
+        ]
+        for (index, message) in session.messages.enumerated() {
+            sections.append(
+                "第 \(index + 1) 题 · \(formatter.string(from: message.at))\n\n"
+                    + "问题\n\(message.input)\n\n答案\n\(message.answer)"
+            )
+        }
+        if session.messages.isEmpty {
+            sections.append("当前会话尚无问题。")
+        }
+        detailTextView.string = sections.joined(separator: "\n\n----------------\n\n")
+        detailTextView.scrollToBeginningOfDocument(nil)
+    }
+
+    @objc private func createSession() {
+        onNewSession()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.reloadSessions()
+        }
+    }
+
+    @objc private func activateSelectedSession() {
+        guard let session = selectedSession, session.id != "legacy" else { return }
+        onActivateSession(session.id)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.reloadSessions()
+        }
+    }
+
+    @objc private func openHistory() {
+        let history = rootURL.appendingPathComponent("questions", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: history,
+            withIntermediateDirectories: true
+        )
+        NSWorkspace.shared.open(history)
+    }
+}
+
+@MainActor
+final class SessionManagerWindowController: NSWindowController {
+    private let contentController: SessionManagerViewController
+
+    init(
+        rootURL: URL,
+        onNewSession: @escaping () -> Void,
+        onActivateSession: @escaping (String) -> Void
+    ) {
+        contentController = SessionManagerViewController(
+            rootURL: rootURL,
+            onNewSession: onNewSession,
+            onActivateSession: onActivateSession
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 820, height: 560),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "LanShot 会话管理"
+        window.contentViewController = contentController
+        window.isReleasedWhenClosed = false
+        window.level = .floating
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.sharingType = .none
+        super.init(window: window)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func showWindow(_ sender: Any?) {
+        contentController.reloadSessions()
+        window?.center()
+        super.showWindow(sender)
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(sender)
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let preferences = OverlayPreferences()
     private let answerMonitor = LatestAnswerMonitor()
     private var panel: FloatingPanel?
     private var settingsController: SettingsWindowController?
+    private var sessionController: SessionManagerWindowController?
     private var statusItem: NSStatusItem?
     private var captureToggleItem: NSMenuItem?
 
@@ -1207,7 +1565,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.image = icon
         item.button?.toolTip = answerMonitor.isVoiceMode ? "LanShot 语音模式" : "LanShot 截屏模式"
         let menu = NSMenu()
+        let modeItem = NSMenuItem(title: "模式", action: nil, keyEquivalent: "")
+        let modeMenu = NSMenu(title: "模式")
+        let screenshotModeItem = NSMenuItem(
+            title: "截屏模式",
+            action: #selector(switchToScreenshotMode),
+            keyEquivalent: ""
+        )
+        screenshotModeItem.target = self
+        screenshotModeItem.state = answerMonitor.isVoiceMode ? .off : .on
+        screenshotModeItem.isEnabled = answerMonitor.isVoiceMode
+        modeMenu.addItem(screenshotModeItem)
+        let voiceModeItem = NSMenuItem(
+            title: "面试模式",
+            action: #selector(switchToVoiceMode),
+            keyEquivalent: ""
+        )
+        voiceModeItem.target = self
+        voiceModeItem.state = answerMonitor.isVoiceMode ? .on : .off
+        voiceModeItem.isEnabled = !answerMonitor.isVoiceMode
+        modeMenu.addItem(voiceModeItem)
+        menu.addItem(modeItem)
+        menu.setSubmenu(modeMenu, for: modeItem)
+        menu.addItem(NSMenuItem.separator())
         if answerMonitor.isVoiceMode {
+            let sessionsItem = NSMenuItem(
+                title: "会话管理...",
+                action: #selector(showSessionManager),
+                keyEquivalent: ""
+            )
+            sessionsItem.target = self
+            menu.addItem(sessionsItem)
+            menu.addItem(NSMenuItem.separator())
             let captureItem = NSMenuItem(
                 title: "开始采集",
                 action: #selector(toggleVoiceCapture),
@@ -1280,6 +1669,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func manualCapture() { answerMonitor.requestCapture() }
+    @objc private func switchToScreenshotMode() { answerMonitor.requestModeSwitch(to: "screenshot") }
+    @objc private func switchToVoiceMode() { answerMonitor.requestModeSwitch(to: "voice") }
+    @objc private func showSessionManager() {
+        guard let rootURL = answerMonitor.sessionRootURL else { return }
+        if sessionController == nil {
+            sessionController = SessionManagerWindowController(
+                rootURL: rootURL,
+                onNewSession: { [weak self] in
+                    self?.answerMonitor.requestNewSession()
+                },
+                onActivateSession: { [weak self] sessionID in
+                    self?.answerMonitor.requestActivateSession(sessionID)
+                }
+            )
+        }
+        sessionController?.showWindow(nil)
+    }
     @objc private func toggleVoiceCapture() { answerMonitor.toggleVoiceCapture() }
     @objc private func submitVoiceQuestion() { answerMonitor.submitVoiceQuestion() }
     @objc private func quitVoiceMode() { answerMonitor.quitVoiceMode() }

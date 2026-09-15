@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,7 @@ VOICE_MODEL = "glm-5.3"
 @dataclass(frozen=True)
 class QuestionSnapshot:
     session_id: str
+    conversation_id: str
     identifier: str
     archive_directory: Path
     system_text: str
@@ -52,6 +54,74 @@ def atomic_text(path: Path, value: str) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(value, encoding="utf-8")
     os.replace(temporary, path)
+
+
+def current_conversation_id(output: Path) -> str:
+    state_file = output.parent / "current_session.json"
+    try:
+        value = json.loads(state_file.read_text(encoding="utf-8"))
+        session_id = value.get("id", "") if isinstance(value, dict) else ""
+        if isinstance(session_id, str) and 1 <= len(session_id) <= 80:
+            return session_id
+    except (OSError, json.JSONDecodeError):
+        pass
+    return ""
+
+
+def create_conversation_session(output: Path) -> dict:
+    root = output.parent
+    root.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    session_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    record = {
+        "id": session_id,
+        "title": f"面试会话 {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        "created_at": now,
+    }
+    sessions_file = root / "sessions.jsonl"
+    with sessions_file.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chmod(sessions_file, 0o600)
+    atomic_text(root / "current_session.json", json.dumps(record, ensure_ascii=False) + "\n")
+    atomic_text(output / "current_conversation_id.txt", f"{session_id}\n")
+    return record
+
+
+def ensure_conversation_session(output: Path) -> str:
+    session_id = current_conversation_id(output)
+    if session_id:
+        atomic_text(output / "current_conversation_id.txt", f"{session_id}\n")
+        return session_id
+    return str(create_conversation_session(output)["id"])
+
+
+def activate_conversation_session(output: Path, session_id: str) -> dict:
+    if not session_id or len(session_id) > 80:
+        raise ValueError("invalid session id")
+    record = None
+    try:
+        with (output.parent / "sessions.jsonl").open("r", encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    candidate = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(candidate, dict) and candidate.get("id") == session_id:
+                    record = candidate
+    except OSError as error:
+        raise ValueError("session not found") from error
+    if record is None:
+        raise ValueError("session not found")
+    if process_id(output):
+        capture_stop(output)
+    atomic_text(
+        output.parent / "current_session.json",
+        json.dumps(record, ensure_ascii=False) + "\n",
+    )
+    atomic_text(output / "current_conversation_id.txt", f"{session_id}\n")
+    return record
 
 
 def load_api_key() -> str:
@@ -144,8 +214,14 @@ def combined_transcript(system_text: str, microphone_text: str) -> str:
     )
 
 
-def load_question_history(output: Path, limit: int = 6) -> list[dict]:
+def load_question_history(
+    output: Path,
+    limit: int = 6,
+    *,
+    conversation_id: str | None = None,
+) -> list[dict]:
     history_file = output.parent / "conversation_history.jsonl"
+    active_conversation = conversation_id or ensure_conversation_session(output)
     items: deque[dict] = deque(maxlen=limit)
     try:
         with history_file.open("r", encoding="utf-8") as stream:
@@ -158,6 +234,7 @@ def load_question_history(output: Path, limit: int = 6) -> list[dict]:
                     continue
                 if (
                     isinstance(item, dict)
+                    and item.get("conversation_id") == active_conversation
                     and isinstance(item.get("input"), str)
                     and isinstance(item.get("answer"), str)
                 ):
@@ -172,12 +249,14 @@ def append_question_history(
     question: str,
     answer: str,
     *,
-    session_id: str | None = None,
+    capture_session_id: str | None = None,
+    conversation_id: str | None = None,
 ) -> None:
     history_file = output.parent / "conversation_history.jsonl"
     history_file.parent.mkdir(parents=True, exist_ok=True)
     item = {
-        "session_id": session_id or read_text(output / "capture_session_id.txt"),
+        "capture_session_id": capture_session_id or read_text(output / "capture_session_id.txt"),
+        "conversation_id": conversation_id or ensure_conversation_session(output),
         "at": time.time(),
         "input": question,
         "answer": answer,
@@ -197,6 +276,7 @@ def prepare_question_snapshot(output: Path) -> QuestionSnapshot:
     archive_directory = archive_capture(output, question, "正在生成答案...")
     return QuestionSnapshot(
         session_id=session_id,
+        conversation_id=ensure_conversation_session(output),
         identifier=capture_identifier(session_id),
         archive_directory=archive_directory,
         system_text=system_text,
@@ -240,7 +320,11 @@ def submit_snapshot(
     try:
         prompt = VOICE_PROMPT.read_text(encoding="utf-8").strip()
         active_client = client or VoiceQuestionClient(load_api_key())
-        answer = active_client.ask(question, prompt, history=load_question_history(output))
+        answer = active_client.ask(
+            question,
+            prompt,
+            history=load_question_history(output, conversation_id=snapshot.conversation_id),
+        )
     except (OSError, RuntimeError) as error:
         message = f"提问失败：{error}"
         atomic_text(output / "answer.txt", f"{message}\n")
@@ -265,7 +349,13 @@ def submit_snapshot(
         )
         + "\n",
     )
-    append_question_history(output, question, answer, session_id=snapshot.session_id)
+    append_question_history(
+        output,
+        question,
+        answer,
+        capture_session_id=snapshot.session_id,
+        conversation_id=snapshot.conversation_id,
+    )
     update_snapshot_archive(snapshot, answer)
     return True
 
@@ -339,7 +429,15 @@ def control_process_id(output: Path) -> int | None:
 
 
 def write_capture_command(output: Path, action: str) -> None:
-    if action not in ("start", "stop", "submit", "shutdown", "quit"):
+    if action not in (
+        "start",
+        "stop",
+        "submit",
+        "new-session",
+        "switch-screenshot",
+        "shutdown",
+        "quit",
+    ):
         raise ValueError("unsupported capture command")
     command = output / "voice_capture_command.txt"
     temporary = command.with_suffix(".tmp")
@@ -452,6 +550,7 @@ def stop_overlay(output: Path) -> bool:
 
 def prepare(output: Path) -> int:
     output.mkdir(parents=True, exist_ok=True)
+    ensure_conversation_session(output)
     if not process_id(output) and read_text(output / "capture.log") in ("", "running", "starting"):
         (output / "capture.log").write_text("stopped\n", encoding="utf-8")
     try:
@@ -500,6 +599,7 @@ def start(output: Path, *, ensure_controller: bool = True) -> int:
         print(f"缺少本地采集程序：{executable}", file=sys.stderr)
         return 1
     output.mkdir(parents=True, exist_ok=True)
+    ensure_conversation_session(output)
     archive_pending_capture(output)
     session_id = f"{time.strftime('%H%M%S')}-{time.time_ns()}"
     atomic_text(output / "capture_session_id.txt", f"{session_id}\n")
@@ -646,6 +746,28 @@ def shutdown_from_overlay(output: Path) -> bool:
     return audio_stopped and overlay_stopped
 
 
+def start_new_conversation(output: Path) -> dict:
+    if process_id(output):
+        capture_stop(output)
+    return create_conversation_session(output)
+
+
+def spawn_mode_switch(output: Path, mode: str) -> None:
+    if mode not in ("screenshot", "voice"):
+        raise ValueError("unsupported mode")
+    controller = ROOT.parent / "unified/mode_controller.py"
+    log_file = output.parent / "mode-switch.log"
+    with log_file.open("ab") as stream:
+        subprocess.Popen(
+            [sys.executable, str(controller), mode],
+            stdin=subprocess.DEVNULL,
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            close_fds=True,
+        )
+
+
 def control_loop(output: Path) -> int:
     output.mkdir(parents=True, exist_ok=True)
     pid_url = output / "voice_control.pid"
@@ -751,6 +873,14 @@ def control_loop(output: Path) -> int:
                     capture_stop(output)
                 elif action == "submit":
                     capture_submit(output, submission_queue=submissions)
+                elif action == "new-session":
+                    start_new_conversation(output)
+                elif action == "activate-session":
+                    parts = command.split(maxsplit=2)
+                    if len(parts) == 3:
+                        activate_conversation_session(output, parts[1])
+                elif action == "switch-screenshot":
+                    spawn_mode_switch(output, "screenshot")
                 elif action == "shutdown":
                     shutdown_from_overlay(output)
                     break

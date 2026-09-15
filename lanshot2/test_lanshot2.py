@@ -1,5 +1,7 @@
 import importlib.util
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -101,6 +103,83 @@ class LanShot2Tests(unittest.TestCase):
         self.assertEqual(payload["messages"][2], {"role": "assistant", "content": "上一题答案"})
         self.assertEqual(payload["messages"][3], {"role": "user", "content": "什么是 GIL？"})
         self.assertEqual(request.headers["Authorization"], "Bearer secret-key")
+
+    def test_macos_keychain_wins_over_stale_environment_keys(self):
+        service = load_audio_service()
+        bailian_result = subprocess.CompletedProcess([], 0, "keychain-bailian\n", "")
+        google_result = subprocess.CompletedProcess([], 0, "keychain-google\n", "")
+        with mock.patch.dict(
+            os.environ,
+            {
+                "DASHSCOPE_API_KEY": "stale-bailian",
+                "GOOGLE_AGENT_PLATFORM_API_KEY": "stale-google",
+            },
+        ):
+            with mock.patch.object(service.subprocess, "run", return_value=bailian_result):
+                self.assertEqual(service.load_api_key(), "keychain-bailian")
+            with mock.patch.object(service.subprocess, "run", return_value=google_result):
+                self.assertEqual(service.load_google_api_key(), "keychain-google")
+
+    def test_gemini_question_uses_official_agent_platform_medium_thinking(self):
+        service = load_audio_service()
+        response = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"thought": True, "text": "不可显示的思考"},
+                            {"text": "这是 Gemini 回答"},
+                        ]
+                    },
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {"totalTokenCount": 123},
+        }
+        opener = mock.Mock(return_value=FakeResponse(json.dumps(response).encode()))
+        client = service.GeminiQuestionClient("google-secret", opener=opener)
+
+        answer = client.ask(
+            "本轮问题",
+            "现场口答",
+            history=[{"input": "上一题", "answer": "上一答"}],
+        )
+
+        self.assertEqual(answer, "这是 Gemini 回答")
+        self.assertEqual(client.last_usage, {"totalTokenCount": 123})
+        request = opener.call_args.args[0]
+        payload = json.loads(request.data)
+        self.assertEqual(request.full_url, service.GEMINI_URL)
+        self.assertEqual(request.headers["X-goog-api-key"], "google-secret")
+        self.assertEqual(payload["systemInstruction"]["parts"][0]["text"], "现场口答")
+        self.assertEqual(payload["contents"][0]["role"], "user")
+        self.assertEqual(payload["contents"][1]["role"], "model")
+        self.assertEqual(payload["contents"][-1]["parts"][0]["text"], "本轮问题")
+        self.assertEqual(
+            payload["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "MEDIUM",
+        )
+        self.assertEqual(payload["generationConfig"]["maxOutputTokens"], 4096)
+        self.assertEqual(opener.call_args.kwargs["timeout"], 20)
+
+    def test_gemini_failure_falls_back_to_glm(self):
+        service = load_audio_service()
+        primary = mock.Mock(model="gemini-3.8-flash")
+        primary.ask.side_effect = RuntimeError("offline")
+        fallback = mock.Mock(model="glm-5.3")
+        fallback.ask.return_value = "GLM 备用答案"
+        client = service.FallbackQuestionClient(primary, fallback)
+
+        self.assertEqual(client.ask("问题", "提示", history=[]), "GLM 备用答案")
+        self.assertTrue(client.fallback_used)
+        self.assertEqual(client.model, "glm-5.3")
+        fallback.ask.assert_called_once_with("问题", "提示", history=[])
+
+    def test_voice_prompt_requires_short_spoken_answer(self):
+        prompt = (ROOT / "voice_question_prompt.txt").read_text(encoding="utf-8")
+        self.assertIn("面试现场可以直接说出口", prompt)
+        self.assertIn("八十到一百八十个汉字", prompt)
+        self.assertIn("不要说“根据知识库”", prompt)
 
     def test_submitting_question_writes_answer_and_history(self):
         service = load_audio_service()

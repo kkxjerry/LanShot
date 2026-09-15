@@ -5,11 +5,13 @@ import json
 import os
 import signal
 import shutil
+import socket
 import subprocess
 import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections import deque
@@ -35,7 +37,12 @@ OVERLAY_EXECUTABLE = OVERLAY_APP / "Contents/MacOS/CaptureExclusionDemo"
 DEFAULT_OUTPUT = Path.home() / "Library/Application Support/LanShot2/audio"
 VOICE_PROMPT = ROOT / "voice_question_prompt.txt"
 BAILIAN_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-VOICE_MODEL = "glm-5.3"
+BAILIAN_FALLBACK_MODEL = "glm-5.3"
+GEMINI_URL = (
+    "https://aiplatform.googleapis.com/v1/publishers/google/models/"
+    "gemini-3.8-flash:generateContent"
+)
+VOICE_MODEL = "gemini-3.8-flash"
 
 
 @dataclass(frozen=True)
@@ -136,28 +143,152 @@ def activate_conversation_session(output: Path, session_id: str) -> dict:
 
 
 def load_api_key() -> str:
-    environment_key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
-    if environment_key:
-        return environment_key
-    result = subprocess.run(
-        [
-            "/usr/bin/security",
-            "find-generic-password",
-            "-s",
-            "com.lanshot.bailian",
-            "-a",
-            "DASHSCOPE_API_KEY",
-            "-w",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    key = result.stdout.strip() if result.returncode == 0 else ""
+    key = ""
+    if sys.platform == "darwin":
+        result = subprocess.run(
+            [
+                "/usr/bin/security",
+                "find-generic-password",
+                "-s",
+                "com.lanshot.bailian",
+                "-a",
+                "DASHSCOPE_API_KEY",
+                "-w",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        key = result.stdout.strip() if result.returncode == 0 else ""
+    if key:
+        return key
+    key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
     if not key:
         raise RuntimeError("未找到百炼 API Key")
     return key
+
+
+def load_google_api_key() -> str:
+    key = ""
+    if sys.platform == "darwin":
+        result = subprocess.run(
+            [
+                "/usr/bin/security",
+                "find-generic-password",
+                "-s",
+                "com.lanshot.google",
+                "-a",
+                "GOOGLE_AGENT_PLATFORM_API_KEY",
+                "-w",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        key = result.stdout.strip() if result.returncode == 0 else ""
+    if key:
+        return key
+    key = os.environ.get("GOOGLE_AGENT_PLATFORM_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("未找到 Google Agent Platform API Key")
+    return key
+
+
+def google_request_opener(proxy_url: str | None = None):
+    configured = (
+        proxy_url
+        if proxy_url is not None
+        else os.environ.get("LANSHOT_GOOGLE_PROXY", "").strip()
+    )
+    if configured.lower() in ("direct", "none"):
+        return urllib.request.build_opener(urllib.request.ProxyHandler({})).open
+    if not configured:
+        try:
+            with socket.create_connection(("127.0.0.1", 7890), timeout=0.15):
+                configured = "http://127.0.0.1:7890"
+        except OSError:
+            return urllib.request.urlopen
+    parsed = urllib.parse.urlsplit(configured)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("Google proxy must be an HTTP URL")
+    if parsed.username or parsed.password:
+        raise ValueError("Google proxy credentials are not supported")
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": configured, "https": configured})
+    ).open
+
+
+class GeminiQuestionClient:
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        opener=None,
+        url: str = GEMINI_URL,
+        model: str = VOICE_MODEL,
+        thinking_level: str = "MEDIUM",
+    ) -> None:
+        if not api_key.strip():
+            raise ValueError("Google API key is empty")
+        if thinking_level not in ("LOW", "MEDIUM", "HIGH"):
+            raise ValueError("unsupported Gemini thinking level")
+        self.api_key = api_key.strip()
+        self.opener = opener or google_request_opener()
+        self.url = url
+        self.model = model
+        self.thinking_level = thinking_level
+        self.last_usage: dict = {}
+
+    def ask(self, question: str, prompt: str, history: list[dict] | None = None) -> str:
+        contents = []
+        for item in history or []:
+            contents.append({"role": "user", "parts": [{"text": item["input"]}]})
+            contents.append({"role": "model", "parts": [{"text": item["answer"]}]})
+        contents.append({"role": "user", "parts": [{"text": question}]})
+        payload = {
+            "systemInstruction": {"parts": [{"text": prompt}]},
+            "contents": contents,
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": 4_096,
+                "thinkingConfig": {"thinkingLevel": self.thinking_level},
+            },
+        }
+        request = urllib.request.Request(
+            self.url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "x-goog-api-key": self.api_key,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with self.opener(request, timeout=20) as response:
+                body = response.read(4 * 1024 * 1024)
+        except urllib.error.HTTPError as error:
+            status = error.code
+            error.close()
+            raise RuntimeError(f"Gemini 请求失败，HTTP {status}") from error
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            raise RuntimeError("无法连接 Gemini 服务") from error
+        try:
+            result = json.loads(body)
+            parts = result["candidates"][0]["content"]["parts"]
+            answer = "".join(
+                part.get("text", "")
+                for part in parts
+                if isinstance(part, dict) and not part.get("thought")
+            )
+            usage = result.get("usageMetadata", {})
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, IndexError, TypeError) as error:
+            raise RuntimeError("Gemini 返回了无效结果") from error
+        if not isinstance(answer, str) or not answer.strip():
+            raise RuntimeError("Gemini 没有返回答案")
+        self.last_usage = usage if isinstance(usage, dict) else {}
+        return answer.strip()
 
 
 class VoiceQuestionClient:
@@ -167,7 +298,7 @@ class VoiceQuestionClient:
         *,
         opener=urllib.request.urlopen,
         url: str = BAILIAN_URL,
-        model: str = VOICE_MODEL,
+        model: str = BAILIAN_FALLBACK_MODEL,
     ) -> None:
         self.api_key = api_key
         self.opener = opener
@@ -214,6 +345,36 @@ class VoiceQuestionClient:
         if not isinstance(answer, str) or not answer.strip():
             raise RuntimeError("大模型没有返回答案")
         return answer.strip().replace("```python", "").replace("```", "").strip()
+
+
+class FallbackQuestionClient:
+    def __init__(self, primary: GeminiQuestionClient, fallback: VoiceQuestionClient) -> None:
+        self.primary = primary
+        self.fallback = fallback
+        self.model = primary.model
+        self.fallback_used = False
+
+    def ask(self, question: str, prompt: str, history: list[dict] | None = None) -> str:
+        self.model = self.primary.model
+        self.fallback_used = False
+        try:
+            return self.primary.ask(question, prompt, history=history)
+        except RuntimeError:
+            self.model = self.fallback.model
+            self.fallback_used = True
+            return self.fallback.ask(question, prompt, history=history)
+
+
+QuestionClient = VoiceQuestionClient | GeminiQuestionClient | FallbackQuestionClient
+
+
+def default_question_client() -> QuestionClient:
+    fallback = VoiceQuestionClient(load_api_key())
+    try:
+        primary = GeminiQuestionClient(load_google_api_key())
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+        return fallback
+    return FallbackQuestionClient(primary, fallback)
 
 
 def combined_transcript(system_text: str, microphone_text: str) -> str:
@@ -263,6 +424,7 @@ def append_question_history(
     capture_session_id: str | None = None,
     conversation_id: str | None = None,
     knowledge: dict | None = None,
+    model: str | None = None,
 ) -> None:
     history_file = output.parent / "conversation_history.jsonl"
     history_file.parent.mkdir(parents=True, exist_ok=True)
@@ -275,6 +437,8 @@ def append_question_history(
     }
     if knowledge is not None:
         item["knowledge"] = knowledge
+    if model:
+        item["model"] = model
     with history_file.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(item, ensure_ascii=False) + "\n")
         stream.flush()
@@ -333,7 +497,7 @@ def submit_snapshot(
     output: Path,
     snapshot: QuestionSnapshot,
     *,
-    client: VoiceQuestionClient | None = None,
+    client: QuestionClient | None = None,
     knowledge_service: KnowledgeService | None = None,
 ) -> bool:
     question = snapshot.question
@@ -374,7 +538,7 @@ def submit_snapshot(
     )
     try:
         prompt = VOICE_PROMPT.read_text(encoding="utf-8").strip()
-        active_client = client or VoiceQuestionClient(load_api_key())
+        active_client = client or default_question_client()
         answer = active_client.ask(
             ground_text(question, knowledge),
             prompt,
@@ -399,12 +563,15 @@ def submit_snapshot(
         update_snapshot_archive(snapshot, message)
         return False
     atomic_text(output / "answer.txt", f"{answer}\n")
+    model_used = getattr(active_client, "model", VOICE_MODEL)
+    fallback_used = bool(getattr(active_client, "fallback_used", False))
     atomic_text(
         output / "question_status.json",
         json.dumps(
             {
                 "status": "complete",
-                "model": VOICE_MODEL,
+                "model": model_used,
+                "fallback_used": fallback_used,
                 "session_id": snapshot.session_id,
                 "knowledge": knowledge.summary(),
                 "at": time.time(),
@@ -420,6 +587,7 @@ def submit_snapshot(
         capture_session_id=snapshot.session_id,
         conversation_id=snapshot.conversation_id,
         knowledge=knowledge.summary(),
+        model=model_used,
     )
     update_snapshot_archive(snapshot, answer)
     return True
@@ -428,7 +596,7 @@ def submit_snapshot(
 def submit_question(
     output: Path,
     *,
-    client: VoiceQuestionClient | None = None,
+    client: QuestionClient | None = None,
 ) -> bool:
     return submit_snapshot(output, prepare_question_snapshot(output), client=client)
 

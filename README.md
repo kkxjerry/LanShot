@@ -10,6 +10,7 @@ LanShot 是一个 macOS 本地面试辅助工具，包含截屏模式和双路�
 - Python 3.10 或更高版本，推荐 Python 3.12。
 - Xcode Command Line Tools，需包含 `swiftc`。
 - 可用的阿里云百炼 API Key。
+- 可选的 Google Agent Platform API Key；未配置时面试回答自动使用 GLM 备用模型。
 
 如果系统只有 Python 3.9，使用 Homebrew 并行安装即可，不要替换 macOS 自带版本：
 
@@ -27,7 +28,7 @@ cd LanShot
 open install.command
 ```
 
-`install.command` 会检查环境、选择正确的 Python、将 API Key 安全写入当前 Mac 的钥匙串、编译音频程序和悬浮窗，并启动语音模式到待机状态。API Key 不会写入仓库或配置文件。
+`install.command` 会检查环境、选择正确的 Python、将 API Key 安全写入当前 Mac 的钥匙串、编译音频程序和悬浮窗，并启动语音模式到待机状态。API Key 不会写入仓库或配置文件。面试回答默认使用官方 `gemini-3.8-flash` 中等推理，Gemini 不可用时自动回退到百炼 `glm-5.3`。
 
 首次点击“开始采集”时，需要在 macOS“隐私与安全性”中允许：
 

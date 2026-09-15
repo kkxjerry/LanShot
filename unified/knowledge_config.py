@@ -120,7 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--workspace-id", required=True)
     setup.add_argument("--agent-id", required=True)
     setup.add_argument("--timeout", type=float, default=3.0)
-    setup.add_argument("--max-hits", type=int, default=5)
+    setup.add_argument("--max-hits", type=int, default=3)
     setup.add_argument("--min-score", type=float, default=0.5)
     setup.add_argument("--max-context-chars", type=int, default=9_000)
     commands.add_parser("status")

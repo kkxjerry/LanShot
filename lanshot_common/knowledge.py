@@ -37,7 +37,7 @@ class KnowledgeConfig:
     agent_id: str
     enabled: bool = True
     timeout_seconds: float = 3.0
-    max_hits: int = 5
+    max_hits: int = 3
     min_score: float = 0.5
     max_context_chars: int = 9_000
 
@@ -403,6 +403,17 @@ def format_knowledge_context(result: KnowledgeSearchResult) -> str:
 def ground_text(original: str, result: KnowledgeSearchResult) -> str:
     context = format_knowledge_context(result)
     if not context:
+        if result.status in ("empty", "failed") and result.query.strip():
+            return (
+                f"{original}\n\n"
+                "【私有知识库状态】\n"
+                "本次没有可靠的私有资料可用。如果问题涉及候选人的个人项目、"
+                "经历、实验数字或当前配置，必须明确说资料不足，不得给出"
+                "假设的公司、数据集、文档数量、指标或示例答案。通用知识问题"
+                "可以继续依据稳定的通用知识回答。如果项目名或缩写可能与公开技术"
+                "同名，不得自行改成公开技术解释，也不得同时给出猜测答案；只说明"
+                "资料不足并请对方确认指代。"
+            )
         return original
     return (
         f"{original}\n\n"

@@ -160,7 +160,10 @@ class KnowledgeTests(unittest.TestCase):
             key_provider.assert_not_called()
 
     def test_grounding_marks_chunks_as_untrusted_and_preserves_plain_request(self):
-        unchanged = ground_text("原始问题", KnowledgeSearchResult(status="empty", query="原始问题"))
+        unchanged = ground_text(
+            "原始问题",
+            KnowledgeSearchResult(status="disabled", query="原始问题"),
+        )
         self.assertEqual(unchanged, "原始问题")
         result = KnowledgeSearchResult(
             status="hit",
@@ -190,6 +193,20 @@ class KnowledgeTests(unittest.TestCase):
         self.assertIn("BEGIN_UNTRUSTED_KNOWLEDGE", grounded)
         self.assertIn("资料.md", grounded)
         self.assertEqual(grounded.count("END_UNTRUSTED_KNOWLEDGE"), 1)
+
+    def test_empty_enabled_retrieval_forbids_inventing_personal_numbers(self):
+        grounded = ground_text(
+            "我的项目有多少篇文档？",
+            KnowledgeSearchResult(
+                status="empty",
+                query="我的项目有多少篇文档？",
+            ),
+        )
+
+        self.assertIn("没有可靠的私有资料", grounded)
+        self.assertIn("不得给出", grounded)
+        self.assertIn("文档数量", grounded)
+        self.assertIn("不得自行改成公开技术解释", grounded)
 
 
 if __name__ == "__main__":

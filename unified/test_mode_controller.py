@@ -34,6 +34,8 @@ class ModeControllerTests(unittest.TestCase):
         installer = (root / "install.command").read_text(encoding="utf-8")
         runtime = (root / "unified/runtime_python.zsh").read_text(encoding="utf-8")
         self.assertIn("security add-generic-password", installer)
+        self.assertIn("com.lanshot.google", installer)
+        self.assertIn("GOOGLE_AGENT_PLATFORM_API_KEY", installer)
         self.assertIn("capture-exclusion-demo/build.sh", installer)
         self.assertIn("screenshot-sender/build_native_ocr.command", installer)
         self.assertIn("lanshot2/build_audio.command", installer)

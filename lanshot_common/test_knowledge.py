@@ -36,6 +36,7 @@ class KnowledgeTests(unittest.TestCase):
             "agent_id": "aid-agent123",
             "timeout_seconds": 1.5,
             "max_hits": 2,
+            "min_score": 0.5,
             "max_context_chars": 1_000,
         }
         values.update(changes)
@@ -126,6 +127,26 @@ class KnowledgeTests(unittest.TestCase):
         ).search("仍然需要回答")
         self.assertEqual(failed_result.status, "failed")
         self.assertEqual(failed_result.error_code, "transport_unavailable")
+
+    def test_low_score_or_unscored_chunks_are_not_sent_to_model(self):
+        response = {
+            "success": True,
+            "data": {
+                "nodes": [
+                    {"score": 0.49, "text": "低相关内容", "metadata": {}},
+                    {"text": "没有分数", "metadata": {}},
+                    {"score": 0.5, "text": "达到门槛", "metadata": {}},
+                ]
+            },
+        }
+        result = KnowledgeClient(
+            self.config(),
+            "secret-key",
+            opener=mock.Mock(return_value=FakeResponse(json.dumps(response).encode())),
+        ).search("问题")
+
+        self.assertEqual(result.status, "hit")
+        self.assertEqual([hit.text for hit in result.hits], ["达到门槛"])
 
     def test_service_does_not_load_key_when_disabled(self):
         with tempfile.TemporaryDirectory() as directory:

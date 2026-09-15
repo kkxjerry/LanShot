@@ -50,6 +50,7 @@ def configure(arguments: argparse.Namespace) -> dict:
         enabled=True,
         timeout_seconds=arguments.timeout,
         max_hits=arguments.max_hits,
+        min_score=arguments.min_score,
         max_context_chars=arguments.max_context_chars,
     )
     config.write(arguments.config)
@@ -70,6 +71,7 @@ def set_enabled(path: Path, enabled: bool) -> dict:
         enabled=enabled,
         timeout_seconds=current.timeout_seconds,
         max_hits=current.max_hits,
+        min_score=current.min_score,
         max_context_chars=current.max_context_chars,
     )
     updated.write(path)
@@ -89,6 +91,7 @@ def status(path: Path) -> dict:
         "agent_id": config.agent_id,
         "timeout_seconds": config.timeout_seconds,
         "max_hits": config.max_hits,
+        "min_score": config.min_score,
         "max_context_chars": config.max_context_chars,
     }
 
@@ -118,6 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--agent-id", required=True)
     setup.add_argument("--timeout", type=float, default=3.0)
     setup.add_argument("--max-hits", type=int, default=5)
+    setup.add_argument("--min-score", type=float, default=0.5)
     setup.add_argument("--max-context-chars", type=int, default=9_000)
     commands.add_parser("status")
     commands.add_parser("enable")

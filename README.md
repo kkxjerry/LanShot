@@ -69,6 +69,7 @@ unified/configure_knowledge.command
 - 语音模式直接使用两路 ASR 文字检索。
 - 截屏模式先用 macOS Vision 在本地提取截图文字，再检索。
 - 检索结果标记为不可信资料，不执行文档中出现的指令。
+- 默认只把相关度分数大于等于 `0.5` 的召回送给回答模型，低分噪声视为无召回。
 - 未配置、无召回、OCR 失败、超时或百炼错误时，自动回退到原有模型回答，不让 F22/F23 流程卡住。
 - 使用 `python3 unified/knowledge_config.py status` 查看配置，使用 `disable` / `enable` 临时关闭和开启。
 

@@ -38,6 +38,7 @@ class KnowledgeConfig:
     enabled: bool = True
     timeout_seconds: float = 3.0
     max_hits: int = 5
+    min_score: float = 0.5
     max_context_chars: int = 9_000
 
     def __post_init__(self) -> None:
@@ -56,6 +57,8 @@ class KnowledgeConfig:
             raise KnowledgeConfigError("timeout_seconds must be between 0.2 and 15")
         if not 1 <= self.max_hits <= 20:
             raise KnowledgeConfigError("max_hits must be between 1 and 20")
+        if not math.isfinite(self.min_score) or not 0 <= self.min_score <= 1:
+            raise KnowledgeConfigError("min_score must be between 0 and 1")
         if not 1_000 <= self.max_context_chars <= 30_000:
             raise KnowledgeConfigError("max_context_chars must be between 1000 and 30000")
         object.__setattr__(self, "workspace_id", workspace_id)
@@ -87,6 +90,7 @@ class KnowledgeConfig:
             "enabled",
             "timeout_seconds",
             "max_hits",
+            "min_score",
             "max_context_chars",
         }
         if set(raw) - allowed:
@@ -105,6 +109,7 @@ class KnowledgeConfig:
             "enabled": self.enabled,
             "timeout_seconds": self.timeout_seconds,
             "max_hits": self.max_hits,
+            "min_score": self.min_score,
             "max_context_chars": self.max_context_chars,
         }
         temporary: Path | None = None
@@ -294,18 +299,24 @@ class KnowledgeClient:
             text = raw.get("text") or metadata.get("content") or ""
             if not isinstance(text, str) or not text.strip():
                 continue
+            score = raw.get("score")
+            if not isinstance(score, (int, float)) or isinstance(score, bool) or not math.isfinite(score):
+                score = None
+            else:
+                score = float(score)
+            if score is None and self.config.min_score > 0:
+                continue
+            if score is not None and score < self.config.min_score:
+                continue
             text = text.strip()
             remaining = self.config.max_context_chars - used_chars
             if remaining <= 0:
                 break
             if len(text) > remaining:
                 text = text[:remaining].rstrip()
-            score = raw.get("score")
-            if not isinstance(score, (int, float)) or isinstance(score, bool) or not math.isfinite(score):
-                score = None
             hit = KnowledgeHit(
                 text=text,
-                score=float(score) if score is not None else None,
+                score=score,
                 document_name=self._metadata_text(metadata, "doc_name"),
                 title=self._metadata_text(metadata, "title"),
                 document_id=self._metadata_text(metadata, "doc_id"),

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import fcntl
 import json
 import os
 import signal
@@ -11,7 +12,9 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
+from queue import Queue
 
 
 ROOT = Path(__file__).resolve().parent
@@ -22,6 +25,19 @@ DEFAULT_OUTPUT = Path.home() / "Library/Application Support/LanShot2/audio"
 VOICE_PROMPT = ROOT / "voice_question_prompt.txt"
 BAILIAN_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 VOICE_MODEL = "kimi-k2.7-code"
+
+
+@dataclass(frozen=True)
+class QuestionSnapshot:
+    session_id: str
+    identifier: str
+    archive_directory: Path
+    system_text: str
+    microphone_text: str
+
+    @property
+    def question(self) -> str:
+        return combined_transcript(self.system_text, self.microphone_text)
 
 
 def read_text(path: Path) -> str:
@@ -150,11 +166,17 @@ def load_question_history(output: Path, limit: int = 6) -> list[dict]:
     return list(items)
 
 
-def append_question_history(output: Path, question: str, answer: str) -> None:
+def append_question_history(
+    output: Path,
+    question: str,
+    answer: str,
+    *,
+    session_id: str | None = None,
+) -> None:
     history_file = output.parent / "conversation_history.jsonl"
     history_file.parent.mkdir(parents=True, exist_ok=True)
     item = {
-        "session_id": read_text(output / "capture_session_id.txt"),
+        "session_id": session_id or read_text(output / "capture_session_id.txt"),
         "at": time.time(),
         "input": question,
         "answer": answer,
@@ -166,24 +188,53 @@ def append_question_history(output: Path, question: str, answer: str) -> None:
     os.chmod(history_file, 0o600)
 
 
-def submit_question(
-    output: Path,
-    *,
-    client: VoiceQuestionClient | None = None,
-) -> bool:
+def prepare_question_snapshot(output: Path) -> QuestionSnapshot:
+    session_id = read_text(output / "capture_session_id.txt")
     system_text = read_text(output / "interviewer.txt")
     microphone_text = read_text(output / "me.txt")
     question = combined_transcript(system_text, microphone_text)
-    if not system_text and not microphone_text:
+    archive_directory = archive_capture(output, question, "正在生成答案...")
+    return QuestionSnapshot(
+        session_id=session_id,
+        identifier=capture_identifier(session_id),
+        archive_directory=archive_directory,
+        system_text=system_text,
+        microphone_text=microphone_text,
+    )
+
+
+def update_snapshot_archive(snapshot: QuestionSnapshot, answer: str) -> None:
+    atomic_text(
+        snapshot.archive_directory / f"{snapshot.identifier}-question.txt",
+        f"{snapshot.question}\n",
+    )
+    atomic_text(
+        snapshot.archive_directory / f"{snapshot.identifier}-answer.txt",
+        f"{answer}\n",
+    )
+
+
+def submit_snapshot(
+    output: Path,
+    snapshot: QuestionSnapshot,
+    *,
+    client: VoiceQuestionClient | None = None,
+) -> bool:
+    question = snapshot.question
+    if not snapshot.system_text and not snapshot.microphone_text:
         answer = "两路都没有识别到文字，请重新采集。"
         atomic_text(output / "answer.txt", f"{answer}\n")
-        archive_capture(output, question, answer)
+        update_snapshot_archive(snapshot, answer)
         return False
     atomic_text(output / "question.txt", f"{question}\n")
     atomic_text(output / "answer.txt", "正在生成答案...\n")
     atomic_text(
         output / "question_status.json",
-        json.dumps({"status": "requesting", "at": time.time()}, ensure_ascii=False) + "\n",
+        json.dumps(
+            {"status": "requesting", "session_id": snapshot.session_id, "at": time.time()},
+            ensure_ascii=False,
+        )
+        + "\n",
     )
     try:
         prompt = VOICE_PROMPT.read_text(encoding="utf-8").strip()
@@ -197,26 +248,45 @@ def submit_question(
             json.dumps({"status": "failed", "message": str(error), "at": time.time()}, ensure_ascii=False)
             + "\n",
         )
-        archive_capture(output, question, message)
+        update_snapshot_archive(snapshot, message)
         return False
     atomic_text(output / "answer.txt", f"{answer}\n")
     atomic_text(
         output / "question_status.json",
-        json.dumps({"status": "complete", "model": VOICE_MODEL, "at": time.time()}, ensure_ascii=False)
+        json.dumps(
+            {
+                "status": "complete",
+                "model": VOICE_MODEL,
+                "session_id": snapshot.session_id,
+                "at": time.time(),
+            },
+            ensure_ascii=False,
+        )
         + "\n",
     )
-    append_question_history(output, question, answer)
-    archive_capture(output, question, answer)
+    append_question_history(output, question, answer, session_id=snapshot.session_id)
+    update_snapshot_archive(snapshot, answer)
     return True
+
+
+def submit_question(
+    output: Path,
+    *,
+    client: VoiceQuestionClient | None = None,
+) -> bool:
+    return submit_snapshot(output, prepare_question_snapshot(output), client=client)
+
+
+def capture_identifier(configured_id: str) -> str:
+    identifier = "".join(
+        character for character in configured_id if character.isalnum() or character in ("-", "_")
+    )[:80]
+    return identifier or f"{time.strftime('%H%M%S')}-{time.time_ns()}"
 
 
 def archive_capture(output: Path, question: str, answer: str) -> Path:
     configured_id = read_text(output / "capture_session_id.txt")
-    identifier = "".join(
-        character for character in configured_id if character.isalnum() or character in ("-", "_")
-    )[:80]
-    if not identifier:
-        identifier = f"{time.strftime('%H%M%S')}-{time.time_ns()}"
+    identifier = capture_identifier(configured_id)
     history = output.parent / "questions" / time.strftime("%Y-%m-%d")
     history.mkdir(parents=True, exist_ok=True)
     atomic_text(history / f"{identifier}-question.txt", f"{question}\n")
@@ -323,32 +393,35 @@ def stop_control(output: Path) -> bool:
 
 
 def start_overlay(output: Path) -> None:
-    if overlay_process_id(output):
-        return
-    if not OVERLAY_EXECUTABLE.is_file():
-        raise FileNotFoundError(f"缺少语音悬浮窗：{OVERLAY_EXECUTABLE}")
-    for name in ("voice_overlay.pid", "voice_overlay_status.json"):
-        try:
-            (output / name).unlink()
-        except FileNotFoundError:
-            pass
-    subprocess.run(
-        [
-            "open",
-            "-n",
-            str(OVERLAY_APP),
-            "--args",
-            "--lanshot-voice-dir",
-            str(output),
-        ],
-        check=True,
-    )
-    deadline = time.monotonic() + 8
-    while time.monotonic() < deadline:
+    output.mkdir(parents=True, exist_ok=True)
+    with (output / "voice_overlay_launch.lock").open("a+") as launch_lock:
+        fcntl.flock(launch_lock.fileno(), fcntl.LOCK_EX)
         if overlay_process_id(output):
             return
-        time.sleep(0.1)
-    raise RuntimeError("语音悬浮窗启动超时")
+        if not OVERLAY_EXECUTABLE.is_file():
+            raise FileNotFoundError(f"缺少语音悬浮窗：{OVERLAY_EXECUTABLE}")
+        for name in ("voice_overlay.pid", "voice_overlay_status.json"):
+            try:
+                (output / name).unlink()
+            except FileNotFoundError:
+                pass
+        subprocess.run(
+            [
+                "open",
+                "-n",
+                str(OVERLAY_APP),
+                "--args",
+                "--lanshot-voice-dir",
+                str(output),
+            ],
+            check=True,
+        )
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if overlay_process_id(output):
+                return
+            time.sleep(0.1)
+        raise RuntimeError("语音悬浮窗启动超时")
 
 
 def stop_overlay(output: Path) -> bool:
@@ -518,19 +591,39 @@ def capture_stop(output: Path) -> int:
     return 0
 
 
-def capture_submit(output: Path) -> int:
+def capture_submit(
+    output: Path,
+    *,
+    submission_queue: Queue[QuestionSnapshot | None] | None = None,
+) -> int:
     if process_id(output) and not stop_capture(output):
         print("停止识别超时，拒绝发送不完整问题", file=sys.stderr)
         return 1
+    snapshot = prepare_question_snapshot(output)
     atomic_text(output / "capture.log", "submitting\n")
-    submitted = submit_question(output)
-    atomic_text(output / "capture.log", "stopped\n")
+    atomic_text(output / "question.txt", f"{snapshot.question}\n")
+    atomic_text(output / "answer.txt", "正在生成答案...\n")
+    atomic_text(
+        output / "question_status.json",
+        json.dumps(
+            {"status": "queued", "session_id": snapshot.session_id, "at": time.time()},
+            ensure_ascii=False,
+        )
+        + "\n",
+    )
+    if submission_queue is not None:
+        submission_queue.put(snapshot)
     latest_action = read_text(output / "voice_capture_command.txt").split(maxsplit=1)[0]
     resumed = latest_action == "submit" and start(output, ensure_controller=False) == 0
+    submitted = True
+    if submission_queue is None:
+        submitted = submit_snapshot(output, snapshot)
+    if not resumed:
+        atomic_text(output / "capture.log", "stopped\n")
     if resumed:
-        print("问题已发送，历史已保存，下一轮采集已自动开始")
+        print("问题已进入后台生成，下一轮采集已自动开始")
     else:
-        print("问题已发送，历史已保存，悬浮窗继续运行")
+        print("问题已进入后台生成，悬浮窗继续运行")
     return 0 if submitted else 1
 
 
@@ -546,6 +639,42 @@ def control_loop(output: Path) -> int:
     from sender_service import MacF24Listener
 
     hotkey_listener = MacF24Listener()
+    submissions: Queue[QuestionSnapshot | None] = Queue()
+
+    def process_questions() -> None:
+        while True:
+            snapshot = submissions.get()
+            try:
+                if snapshot is None:
+                    return
+                submit_snapshot(output, snapshot)
+            except Exception as error:
+                message = f"提问失败：{type(error).__name__}"
+                atomic_text(output / "answer.txt", f"{message}\n")
+                atomic_text(
+                    output / "question_status.json",
+                    json.dumps(
+                        {
+                            "status": "failed",
+                            "session_id": snapshot.session_id if snapshot else "",
+                            "message": type(error).__name__,
+                            "at": time.time(),
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n",
+                )
+                if snapshot is not None:
+                    update_snapshot_archive(snapshot, message)
+            finally:
+                submissions.task_done()
+
+    question_thread = threading.Thread(
+        target=process_questions,
+        name="lanshot-question-worker",
+        daemon=True,
+    )
+    question_thread.start()
 
     def submit_capture() -> None:
         if read_text(output / "capture.log") in ("submitting", "stopping"):
@@ -602,7 +731,7 @@ def control_loop(output: Path) -> int:
                 elif action == "stop":
                     capture_stop(output)
                 elif action == "submit":
-                    capture_submit(output)
+                    capture_submit(output, submission_queue=submissions)
                 elif action == "quit":
                     break
             if time.monotonic() >= next_overlay_check:
@@ -614,6 +743,8 @@ def control_loop(output: Path) -> int:
                         pass
             time.sleep(0.1)
     finally:
+        submissions.put(None)
+        question_thread.join(timeout=1)
         hotkey_stop.set()
         hotkey_listener.stop()
         hotkey_thread.join(timeout=2)

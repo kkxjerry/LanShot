@@ -151,13 +151,27 @@ class LanShot2Tests(unittest.TestCase):
             with (
                 mock.patch.object(service, "process_id", return_value=123),
                 mock.patch.object(service, "stop_capture", return_value=True) as stop_capture,
-                mock.patch.object(service, "submit_question", return_value=True) as submit,
+                mock.patch.object(service, "prepare_question_snapshot") as prepare_snapshot,
+                mock.patch.object(service, "submit_snapshot") as submit,
                 mock.patch.object(service, "start", return_value=0) as start,
             ):
+                snapshot = service.QuestionSnapshot(
+                    "session-test",
+                    "session-test",
+                    output,
+                    "系统问题",
+                    "麦克风补充",
+                )
+                prepare_snapshot.return_value = snapshot
                 (output / "voice_capture_command.txt").write_text("submit test\n", encoding="utf-8")
-                self.assertEqual(service.capture_submit(output), 0)
+                submissions = service.Queue()
+                self.assertEqual(
+                    service.capture_submit(output, submission_queue=submissions),
+                    0,
+                )
                 stop_capture.assert_called_once_with(output)
-                submit.assert_called_once_with(output)
+                self.assertIs(submissions.get_nowait(), snapshot)
+                submit.assert_not_called()
                 start.assert_called_once_with(output, ensure_controller=False)
 
     def test_build_requires_stable_development_identity(self):

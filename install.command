@@ -47,6 +47,9 @@ fi
 print -- "正在编译悬浮窗..."
 /bin/sh "$ROOT/capture-exclusion-demo/build.sh"
 
+print -- "正在编译截图知识库本地 OCR..."
+/bin/sh "$ROOT/screenshot-sender/build_native_ocr.command"
+
 identity="$(/usr/bin/security find-identity -v -p codesigning 2>/dev/null \
   | /usr/bin/awk '/"Apple Development:/ { print $2; exit }')"
 if [[ -n "$identity" ]]; then
@@ -69,6 +72,7 @@ print -- "1. 菜单栏出现 LanShot 麦克风图标后，点击“开始采集�
 print -- "2. 首次使用时，允许 LanShot Voice Capture 的麦克风、录屏与系统录音权限。"
 print -- "3. 若 F23 不可用，在“隐私与安全性 -> 输入监控”中允许当前 Python 或终端。"
 print -- "4. 日常启动请双击 unified/LanShot.command 或 unified/voice_mode.command。"
+print -- "5. 如需知识库，双击 unified/configure_knowledge.command 填入 Workspace ID 和 Agent ID。"
 print
 read -k 1 "?按任意键关闭窗口..."
 print

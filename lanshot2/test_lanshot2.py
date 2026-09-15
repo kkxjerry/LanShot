@@ -139,6 +139,61 @@ class LanShot2Tests(unittest.TestCase):
             service.archive_pending_capture(output)
             self.assertEqual(set((output.parent / "questions").rglob("*")), archived_before)
 
+    def test_voice_question_uses_and_audits_knowledge_without_changing_saved_question(self):
+        service = load_audio_service()
+        from lanshot_common.knowledge import KnowledgeHit, KnowledgeSearchResult
+
+        class StubClient:
+            def ask(self, question, prompt, history=None):
+                self.question = question
+                return "结合个人项目的答案"
+
+        class StubKnowledge:
+            def search(self, query):
+                self.query = query
+                return KnowledgeSearchResult(
+                    status="hit",
+                    query=query,
+                    hits=(KnowledgeHit("负责订单系统重构", 0.93, "项目经历.md"),),
+                    elapsed_ms=82,
+                    provider_ms=65,
+                    request_id="request-test",
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "audio"
+            output.mkdir()
+            (output / "interviewer.txt").write_text("请介绍项目难点", encoding="utf-8")
+            (output / "me.txt").write_text("重点讲订单系统", encoding="utf-8")
+            (output / "capture_session_id.txt").write_text("capture-rag\n", encoding="utf-8")
+            snapshot = service.prepare_question_snapshot(output)
+            client = StubClient()
+            knowledge = StubKnowledge()
+
+            self.assertTrue(
+                service.submit_snapshot(
+                    output,
+                    snapshot,
+                    client=client,
+                    knowledge_service=knowledge,
+                )
+            )
+
+            saved_question = (output / "question.txt").read_text(encoding="utf-8")
+            self.assertNotIn("负责订单系统重构", saved_question)
+            self.assertIn("负责订单系统重构", client.question)
+            self.assertIn("未经信任", client.question)
+            status = json.loads((output / "knowledge_status.json").read_text(encoding="utf-8"))
+            self.assertEqual(status["status"], "hit")
+            self.assertEqual(status["hits"][0]["document_name"], "项目经历.md")
+            archived = list((output.parent / "questions").rglob("*-knowledge.json"))
+            self.assertEqual(len(archived), 1)
+            history = [
+                json.loads(line)
+                for line in (output.parent / "conversation_history.jsonl").read_text().splitlines()
+            ]
+            self.assertEqual(history[-1]["knowledge"]["hit_count"], 1)
+
     def test_stop_only_saves_but_submit_stops_and_calls_model(self):
         service = load_audio_service()
         with tempfile.TemporaryDirectory() as directory:

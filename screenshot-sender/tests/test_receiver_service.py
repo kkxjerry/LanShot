@@ -13,6 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import receiver_service as receiver
+from lanshot_common.knowledge import KnowledgeHit, KnowledgeSearchResult
 
 
 class FakeResponse:
@@ -116,6 +117,68 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(len(answers), 1)
             self.assertEqual(screenshots[0].read_bytes(), b"\xff\xd8screen\xff\xd9")
             self.assertEqual(answers[0].read_text(encoding="utf-8"), "这次的答案\n")
+
+
+class KnowledgeGroundingTests(unittest.TestCase):
+    def test_screenshot_grounding_uses_ocr_before_search(self):
+        service = mock.Mock()
+        service.enabled.return_value = True
+        service.search.return_value = KnowledgeSearchResult(status="empty", query="解释分布式锁")
+        ocr = mock.Mock()
+        ocr.extract.return_value = "解释分布式锁"
+        grounder = receiver.ScreenshotKnowledgeGrounder(service, ocr)
+
+        result = grounder.retrieve(b"jpeg")
+
+        self.assertEqual(result.status, "empty")
+        ocr.extract.assert_called_once_with(b"jpeg")
+        service.search.assert_called_once_with("解释分布式锁")
+
+    def test_analysis_injects_and_audits_retrieved_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = receiver.ReceiverState(
+                root / "latest.jpg",
+                history_dir=root / "history",
+            )
+            generation = state.begin_analysis(b"\xff\xd8screen\xff\xd9")
+            task_id = state._generations[generation]
+            model = mock.Mock()
+            model.analyze.return_value = "结合知识库的答案"
+            grounder = mock.Mock()
+            grounder.retrieve.return_value = KnowledgeSearchResult(
+                status="hit",
+                query="介绍订单系统",
+                hits=(KnowledgeHit("订单系统采用事务消息", 0.88, "项目资料.md"),),
+                elapsed_ms=90,
+            )
+            analyzer = receiver.AnalysisService(
+                state,
+                model,
+                "回答截图中的问题",
+                knowledge_grounder=grounder,
+            )
+
+            self.assertTrue(analyzer.run_one(mock.Mock()))
+
+            prompt = model.analyze.call_args.args[1]
+            self.assertIn("订单系统采用事务消息", prompt)
+            self.assertIn("未经信任", prompt)
+            latest = json.loads(state.latest_knowledge.read_text(encoding="utf-8"))
+            self.assertEqual(latest["task_id"], task_id)
+            self.assertEqual(latest["status"], "hit")
+            archived = root / "history" / time.strftime("%Y-%m-%d") / f"{task_id}.knowledge.json"
+            self.assertTrue(archived.is_file())
+
+    def test_disabled_knowledge_skips_screenshot_ocr(self):
+        service = mock.Mock()
+        service.enabled.return_value = False
+        ocr = mock.Mock()
+
+        result = receiver.ScreenshotKnowledgeGrounder(service, ocr).retrieve(b"jpeg")
+
+        self.assertEqual(result.status, "disabled")
+        ocr.extract.assert_not_called()
 
 
 class ReceiverHTTPTests(unittest.TestCase):

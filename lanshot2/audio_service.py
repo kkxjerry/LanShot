@@ -18,6 +18,16 @@ from pathlib import Path
 from queue import Queue
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from lanshot_common.knowledge import (  # noqa: E402
+    KnowledgeSearchResult,
+    KnowledgeService,
+    ground_text,
+)
+
+
 ROOT = Path(__file__).resolve().parent
 APP = ROOT / "LanShot Voice Capture.app"
 OVERLAY_APP = ROOT.parent / "capture-exclusion-demo/build/CaptureExclusionDemo.app"
@@ -53,6 +63,7 @@ def atomic_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(value, encoding="utf-8")
+    os.chmod(temporary, 0o600)
     os.replace(temporary, path)
 
 
@@ -251,6 +262,7 @@ def append_question_history(
     *,
     capture_session_id: str | None = None,
     conversation_id: str | None = None,
+    knowledge: dict | None = None,
 ) -> None:
     history_file = output.parent / "conversation_history.jsonl"
     history_file.parent.mkdir(parents=True, exist_ok=True)
@@ -261,6 +273,8 @@ def append_question_history(
         "input": question,
         "answer": answer,
     }
+    if knowledge is not None:
+        item["knowledge"] = knowledge
     with history_file.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(item, ensure_ascii=False) + "\n")
         stream.flush()
@@ -295,11 +309,32 @@ def update_snapshot_archive(snapshot: QuestionSnapshot, answer: str) -> None:
     )
 
 
+def record_snapshot_knowledge(
+    output: Path,
+    snapshot: QuestionSnapshot,
+    result: KnowledgeSearchResult,
+) -> None:
+    payload = {
+        "mode": "voice",
+        "capture_session_id": snapshot.session_id,
+        "conversation_id": snapshot.conversation_id,
+        "at": time.time(),
+        **result.as_dict(),
+    }
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    atomic_text(output / "knowledge_status.json", serialized)
+    atomic_text(
+        snapshot.archive_directory / f"{snapshot.identifier}-knowledge.json",
+        serialized,
+    )
+
+
 def submit_snapshot(
     output: Path,
     snapshot: QuestionSnapshot,
     *,
     client: VoiceQuestionClient | None = None,
+    knowledge_service: KnowledgeService | None = None,
 ) -> bool:
     question = snapshot.question
     if not snapshot.system_text and not snapshot.microphone_text:
@@ -312,7 +347,27 @@ def submit_snapshot(
     atomic_text(
         output / "question_status.json",
         json.dumps(
-            {"status": "requesting", "session_id": snapshot.session_id, "at": time.time()},
+            {"status": "retrieving", "session_id": snapshot.session_id, "at": time.time()},
+            ensure_ascii=False,
+        )
+        + "\n",
+    )
+    knowledge = KnowledgeSearchResult.disabled(question)
+    if knowledge_service is not None:
+        try:
+            knowledge = knowledge_service.search(question)
+        except Exception:
+            knowledge = KnowledgeSearchResult.failed(question, "retrieval_exception")
+    record_snapshot_knowledge(output, snapshot, knowledge)
+    atomic_text(
+        output / "question_status.json",
+        json.dumps(
+            {
+                "status": "requesting",
+                "session_id": snapshot.session_id,
+                "knowledge": knowledge.summary(),
+                "at": time.time(),
+            },
             ensure_ascii=False,
         )
         + "\n",
@@ -321,7 +376,7 @@ def submit_snapshot(
         prompt = VOICE_PROMPT.read_text(encoding="utf-8").strip()
         active_client = client or VoiceQuestionClient(load_api_key())
         answer = active_client.ask(
-            question,
+            ground_text(question, knowledge),
             prompt,
             history=load_question_history(output, conversation_id=snapshot.conversation_id),
         )
@@ -330,7 +385,15 @@ def submit_snapshot(
         atomic_text(output / "answer.txt", f"{message}\n")
         atomic_text(
             output / "question_status.json",
-            json.dumps({"status": "failed", "message": str(error), "at": time.time()}, ensure_ascii=False)
+            json.dumps(
+                {
+                    "status": "failed",
+                    "message": str(error),
+                    "knowledge": knowledge.summary(),
+                    "at": time.time(),
+                },
+                ensure_ascii=False,
+            )
             + "\n",
         )
         update_snapshot_archive(snapshot, message)
@@ -343,6 +406,7 @@ def submit_snapshot(
                 "status": "complete",
                 "model": VOICE_MODEL,
                 "session_id": snapshot.session_id,
+                "knowledge": knowledge.summary(),
                 "at": time.time(),
             },
             ensure_ascii=False,
@@ -355,6 +419,7 @@ def submit_snapshot(
         answer,
         capture_session_id=snapshot.session_id,
         conversation_id=snapshot.conversation_id,
+        knowledge=knowledge.summary(),
     )
     update_snapshot_archive(snapshot, answer)
     return True
@@ -718,7 +783,11 @@ def capture_submit(
     resumed = latest_action == "submit" and start(output, ensure_controller=False) == 0
     submitted = True
     if submission_queue is None:
-        submitted = submit_snapshot(output, snapshot)
+        submitted = submit_snapshot(
+            output,
+            snapshot,
+            knowledge_service=KnowledgeService(load_api_key),
+        )
     if not resumed:
         atomic_text(output / "capture.log", "stopped\n")
     if resumed:
@@ -781,6 +850,7 @@ def control_loop(output: Path) -> int:
 
     hotkey_listener = MacF24Listener()
     submissions: Queue[QuestionSnapshot | None] = Queue()
+    knowledge_service = KnowledgeService(load_api_key)
 
     def process_questions() -> None:
         while True:
@@ -788,7 +858,7 @@ def control_loop(output: Path) -> int:
             try:
                 if snapshot is None:
                     return
-                submit_snapshot(output, snapshot)
+                submit_snapshot(output, snapshot, knowledge_service=knowledge_service)
             except Exception as error:
                 message = f"提问失败：{type(error).__name__}"
                 atomic_text(output / "answer.txt", f"{message}\n")

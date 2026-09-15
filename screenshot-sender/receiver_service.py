@@ -16,6 +16,8 @@ import signal
 import sqlite3
 import os
 import re
+import sys
+import subprocess
 import tempfile
 import threading
 import time
@@ -29,6 +31,16 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from lanshot_common.knowledge import (  # noqa: E402
+    KnowledgeSearchResult,
+    KnowledgeService,
+    ground_text,
+)
 
 
 from reliability import (BUILD, PROTOCOL, TaskStore, QueueFull, Conflict, LeaseLost, InstanceLock,
@@ -47,6 +59,7 @@ DEFAULT_MODEL = "kimi-k2.7-code"
 FALLBACK_PROMPT = "识别截图中的题目并直接给出简洁、准确的纯文本答案。"
 SPEECH_MARKER = "【语音稿】"
 SPEECH_PATTERN = re.compile(r"<speech>\s*(.*?)\s*</speech>", re.IGNORECASE | re.DOTALL)
+DEFAULT_OCR_EXECUTABLE = Path(__file__).with_name("native_ocr")
 
 
 def extract_speech_text(answer: str) -> str:
@@ -191,6 +204,7 @@ class ReceiverState:
         self.latest_answer = Path(latest_answer).expanduser() if latest_answer else self.latest_image.with_name("latest.txt")
         self.latest_speech = self.latest_answer.with_name("latest_tts.txt")
         self.latest_state = self.latest_answer.with_name("latest_state.json")
+        self.latest_knowledge = self.latest_answer.with_name("latest_knowledge.json")
         self.history_dir = Path(history_dir).expanduser() if history_dir else None
         self.profile = profile
         self.default_prompt = load_default_prompt()
@@ -343,10 +357,96 @@ class ReceiverState:
             if folder.is_symlink() or not folder.is_dir() or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", folder.name) or folder.name >= cutoff:
                 continue
             for path in folder.iterdir():
-                if not path.is_symlink() and re.fullmatch(r"[0-9a-f-]{36}\.(jpg|txt)", path.name):
+                if not path.is_symlink() and re.fullmatch(
+                    r"[0-9a-f-]{36}\.(jpg|txt|knowledge\.json)", path.name
+                ):
                     path.unlink(missing_ok=True)
             if not any(folder.iterdir()):
                 folder.rmdir()
+
+    def record_knowledge(
+        self,
+        job: dict[str, Any],
+        result: KnowledgeSearchResult,
+    ) -> None:
+        payload = {
+            "mode": "screenshot",
+            "task_id": job["id"],
+            "at": time.time(),
+            **result.as_dict(),
+        }
+        current = self.store.snapshot(include_answers=False)["current"]
+        if current and current["id"] == job["id"]:
+            atomic_json(self.latest_knowledge, payload)
+        if self.history_dir is not None:
+            date_dir = datetime.fromtimestamp(job["created"]).strftime("%Y-%m-%d")
+            atomic_json(
+                self.history_dir / date_dir / f"{job['id']}.knowledge.json",
+                payload,
+            )
+
+
+class LocalVisionOCR:
+    def __init__(
+        self,
+        executable: Path = DEFAULT_OCR_EXECUTABLE,
+        *,
+        runner: Any = subprocess.run,
+    ) -> None:
+        self.executable = Path(executable)
+        self.runner = runner
+
+    def extract(self, image: bytes) -> str:
+        if not self.executable.is_file():
+            raise FileNotFoundError("local OCR helper is missing")
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as stream:
+                temporary = Path(stream.name)
+                os.fchmod(stream.fileno(), 0o600)
+                stream.write(image)
+                stream.flush()
+            result = self.runner(
+                [str(self.executable), str(temporary)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=6,
+            )
+            if result.returncode != 0:
+                raise RuntimeError("local OCR failed")
+            return result.stdout.strip()[:24_000]
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+
+class ScreenshotKnowledgeGrounder:
+    def __init__(self, service: KnowledgeService, ocr: LocalVisionOCR) -> None:
+        self.service = service
+        self.ocr = ocr
+
+    def retrieve(self, image: bytes) -> KnowledgeSearchResult:
+        if not self.service.enabled():
+            return KnowledgeSearchResult.disabled("")
+        started = time.monotonic()
+        try:
+            query = self.ocr.extract(image)
+        except FileNotFoundError:
+            return KnowledgeSearchResult.failed(
+                "",
+                "ocr_unavailable",
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            return KnowledgeSearchResult.failed(
+                "",
+                "ocr_failed",
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
+        if not query:
+            return KnowledgeSearchResult(status="empty", query="")
+        return self.service.search(query)
 
 
 class KimiClient:
@@ -444,9 +544,11 @@ class VoicePublisher:
 
 class AnalysisService:
     def __init__(self, state: ReceiverState, client: KimiClient, prompt: str,
-                 voice_publisher: VoicePublisher | None = None) -> None:
+                 voice_publisher: VoicePublisher | None = None,
+                 knowledge_grounder: ScreenshotKnowledgeGrounder | None = None) -> None:
         self.state, self.client, self.prompt = state, client, prompt
         self.voice_publisher = voice_publisher
+        self.knowledge_grounder = knowledge_grounder
 
     def submit(self, image: bytes, capture_id: str | None = None) -> None:
         self.state.store.accept(capture_id or str(uuid.uuid4()), image, origin="embedded",
@@ -468,7 +570,26 @@ class AnalysisService:
         trace("ANALYSIS_START", job["id"], attempt=job["attempts"])
         self._render_safely(job["id"])
         try:
-            answer = self.client.analyze(job["payload"], job["prompt"])
+            effective_prompt = job["prompt"]
+            if self.knowledge_grounder is not None:
+                try:
+                    knowledge = self.knowledge_grounder.retrieve(job["payload"])
+                except Exception:
+                    knowledge = KnowledgeSearchResult.failed("", "retrieval_exception")
+                try:
+                    self.state.record_knowledge(job, knowledge)
+                except Exception as error:
+                    trace("KNOWLEDGE_AUDIT_FAILED", job["id"], **error_info(error))
+                trace(
+                    "KNOWLEDGE_RETRIEVAL_DONE",
+                    job["id"],
+                    status=knowledge.status,
+                    hit_count=len(knowledge.hits),
+                    elapsed_ms=knowledge.elapsed_ms,
+                    error_code=knowledge.error_code,
+                )
+                effective_prompt = ground_text(effective_prompt, knowledge)
+            answer = self.client.analyze(job["payload"], effective_prompt)
             if not isinstance(answer, str) or not answer.strip():
                 raise ValueError("empty model result")
             applied = self.state.store.finish(job, answer)
@@ -894,11 +1015,20 @@ def main(argv: list[str] | None = None) -> int:
             arguments.voice_token,
             api_key,
         )
-    analyzer = (
-        AnalysisService(state, KimiClient(api_key), arguments.prompt, voice_publisher)
-        if api_key
-        else None
-    )
+    analyzer = None
+    if api_key:
+        knowledge_service = KnowledgeService(lambda: api_key)
+        knowledge_grounder = ScreenshotKnowledgeGrounder(
+            knowledge_service,
+            LocalVisionOCR(),
+        )
+        analyzer = AnalysisService(
+            state,
+            KimiClient(api_key),
+            arguments.prompt,
+            voice_publisher,
+            knowledge_grounder,
+        )
     server = create_server(arguments.host, arguments.port, state, analyzer, node=arguments.node, tls_context=context, allowed_hosts=tuple(arguments.public_host))
     LOGGER.info(
         "receiver listening on http://%s:%d; history=%s",

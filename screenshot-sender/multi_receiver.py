@@ -440,8 +440,16 @@ def load_routes(path: Path, profile: str) -> dict:
 
 
 def build_client(config, *, start_embedded: bool = True, store: TaskStore | None = None):
-    from receiver_service import ReceiverState, AnalysisService, KimiClient, VoicePublisher
+    from receiver_service import (
+        AnalysisService,
+        KimiClient,
+        LocalVisionOCR,
+        ReceiverState,
+        ScreenshotKnowledgeGrounder,
+        VoicePublisher,
+    )
     from receiver_runtime import ReceiverRuntime
+    from lanshot_common.knowledge import KnowledgeService
     spec = load_routes(config.routes_file, config.profile)
     store = store or TaskStore(config.spool_dir / "sender_tasks.sqlite3", max_items=config.queue_max_items,
                               max_bytes=config.queue_max_bytes,ttl=config.queue_ttl_seconds)
@@ -463,7 +471,13 @@ def build_client(config, *, start_embedded: bool = True, store: TaskStore | None
     publisher = None
     if config.profile == "written" and key and os.environ.get("LANSHOT_VOICE_URL") and os.environ.get("LANSHOT_VOICE_TOKEN"):
         publisher = VoicePublisher(os.environ["LANSHOT_VOICE_URL"],os.environ["LANSHOT_VOICE_TOKEN"],key)
-    analyzer = AnalysisService(state,KimiClient(key),prompt,publisher) if key and state is not None else None
+    analyzer = None
+    if key and state is not None:
+        grounder = ScreenshotKnowledgeGrounder(
+            KnowledgeService(lambda: key),
+            LocalVisionOCR(),
+        )
+        analyzer = AnalysisService(state,KimiClient(key),prompt,publisher,grounder)
     runtimes, backends = [], []
     for endpoint in spec["parsed_endpoints"]:
         if endpoint.kind == "embedded":

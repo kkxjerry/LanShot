@@ -35,13 +35,21 @@ class ModeControllerTests(unittest.TestCase):
         runtime = (root / "unified/runtime_python.zsh").read_text(encoding="utf-8")
         self.assertIn("security add-generic-password", installer)
         self.assertIn("capture-exclusion-demo/build.sh", installer)
+        self.assertIn("screenshot-sender/build_native_ocr.command", installer)
         self.assertIn("lanshot2/build_audio.command", installer)
         self.assertIn("mode_controller.py\" voice", installer)
+        self.assertIn("configure_knowledge.command", installer)
         self.assertNotRegex(installer, r"sk-[A-Za-z0-9]{16,}")
         self.assertIn("sys.version_info < (3, 10)", runtime)
         self.assertIn("/opt/homebrew/opt/python@3.12/libexec/bin/python3", runtime)
         self.assertIn("/usr/local/opt/python@3.12/libexec/bin/python3", runtime)
-        for name in ("LanShot.command", "voice_mode.command", "stop_all.command"):
+        for name in (
+            "LanShot.command",
+            "voice_mode.command",
+            "stop_all.command",
+            "configure_knowledge.command",
+            "test_knowledge.command",
+        ):
             launcher = (root / "unified" / name).read_text(encoding="utf-8")
             self.assertIn("runtime_python.zsh", launcher)
 

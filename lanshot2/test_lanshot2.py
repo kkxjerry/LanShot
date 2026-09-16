@@ -258,6 +258,34 @@ class LanShot2Tests(unittest.TestCase):
             output.mkdir()
             (output / "interviewer.txt").write_text("请解释进程和线程", encoding="utf-8")
             (output / "me.txt").write_text("我的回答", encoding="utf-8")
+        self.assertEqual(
+            service.retrieval_query(
+                "你接入的到底是模型还是接口？",
+                "",
+                previous_question=(
+                    "系统声音识别：\nMCP 和 Function Calling 有什么区别？\n\n"
+                    "麦克风识别：\n我的回答"
+                ),
+            ),
+            "上一题：MCP 和 Function Calling 有什么区别？\n"
+            "当前追问：你接入的到底是模型还是接口？",
+        )
+        self.assertEqual(
+            service.retrieval_query(
+                "为什么要用 DAG，而不是只让模型自己规划？",
+                "",
+                previous_question="系统声音识别：\n上一题\n\n麦克风识别：\n回答",
+            ),
+            "为什么要用 DAG，而不是只让模型自己规划？",
+        )
+        self.assertIn(
+            "ReAct Plan Team 模式选择",
+            service.retrieval_query("什么任务适合单 Agent，什么任务适合多 Agent？", ""),
+        )
+        self.assertIn(
+            "Memory Context",
+            service.retrieval_query("CODA 的长期记忆具体怎么存？", ""),
+        )
             (output / "interviewer.wav").write_bytes(b"interviewer-audio")
             (output / "me.wav").write_bytes(b"microphone-audio")
             (output / "capture_session_id.txt").write_text("session-123\n", encoding="utf-8")

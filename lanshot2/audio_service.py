@@ -474,13 +474,29 @@ _QUESTION_MARKER = re.compile(
     re.IGNORECASE,
 )
 _CODA_ALIAS = re.compile(r"(?<![A-Za-z0-9])codah?(?![A-Za-z0-9])", re.IGNORECASE)
+_RETRIEVAL_EXPANSIONS = (
+    (re.compile(r"(?:单\s*Agent|多\s*Agent|单智能体|多智能体)", re.IGNORECASE), "ReAct Plan Team 模式选择"),
+    (re.compile(r"(?:长期记忆|记忆怎么|Memory)", re.IGNORECASE), "Memory Context"),
+)
+_FOLLOWUP_MARKER = re.compile(
+    r"(?:这个|这种|这些|它|刚才|上面|前面|你说的|你提到的|你接入的|"
+    r"为什么是\s*(?:[0-9]+|[一二三四五六七八九十百]+)|那(?:么|个|为什么|怎么))",
+    re.IGNORECASE,
+)
 
 
-def retrieval_query(system_text: str, microphone_text: str) -> str:
+def retrieval_query(
+    system_text: str,
+    microphone_text: str,
+    *,
+    previous_question: str = "",
+) -> str:
     """Build a concise RAG query from the interviewer channel.
 
     Keep the saved question unchanged, but avoid sending duplicated two-channel
     transcripts, test instructions, and microphone reactions to vector search.
+    For an obviously contextual follow-up, prepend only the previous interviewer
+    question rather than the whole conversation.
     """
 
     def clean(value: str) -> str:
@@ -489,12 +505,25 @@ def retrieval_query(system_text: str, microphone_text: str) -> str:
         if matches:
             normalized = normalized[matches[-1].end() :].strip()
         normalized = _CODA_ALIAS.sub("CODA PaiCLI", normalized)
+        expansions = [label for pattern, label in _RETRIEVAL_EXPANSIONS if pattern.search(normalized)]
+        if expansions:
+            normalized = f"{normalized} {' '.join(expansions)}"
         return normalized.strip(" ，,:：。.!！")
 
+    def previous_interviewer(value: str) -> str:
+        if "系统声音识别：" in value:
+            value = value.split("系统声音识别：", 1)[1]
+        if "麦克风识别：" in value:
+            value = value.split("麦克风识别：", 1)[0]
+        return clean(value)
+
     interviewer = clean(system_text)
-    if len(interviewer) >= 4:
-        return interviewer
-    return clean(microphone_text)
+    current = interviewer if len(interviewer) >= 4 else clean(microphone_text)
+    if current and previous_question and _FOLLOWUP_MARKER.search(current):
+        previous = previous_interviewer(previous_question)
+        if previous and previous != current:
+            return f"上一题：{previous}\n当前追问：{current}"
+    return current
 
 
 def load_question_history(
@@ -630,7 +659,13 @@ def submit_snapshot(
         )
         + "\n",
     )
-    search_query = retrieval_query(snapshot.system_text, snapshot.microphone_text)
+    history = load_question_history(output, conversation_id=snapshot.conversation_id)
+    previous_question = history[-1]["input"] if history else ""
+    search_query = retrieval_query(
+        snapshot.system_text,
+        snapshot.microphone_text,
+        previous_question=previous_question,
+    )
     knowledge = KnowledgeSearchResult.disabled(search_query)
     if knowledge_service is not None:
         try:
@@ -655,7 +690,6 @@ def submit_snapshot(
         prompt = VOICE_PROMPT.read_text(encoding="utf-8").strip()
         active_client = client or default_question_client()
         grounded_question = ground_text(question, knowledge)
-        history = load_question_history(output, conversation_id=snapshot.conversation_id)
         streaming_ask = getattr(active_client, "ask_stream", None)
         if callable(streaming_ask):
             answer = streaming_ask(

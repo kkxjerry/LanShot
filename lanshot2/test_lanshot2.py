@@ -224,6 +224,24 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn("面试现场可以直接说出口", prompt)
         self.assertIn("八十到一百八十个汉字", prompt)
         self.assertIn("不要说“根据知识库”", prompt)
+        self.assertIn("私有资料未命中时不得整题拒答", prompt)
+        self.assertIn("严禁编造替代数字", prompt)
+        self.assertIn("个人事实无依据时不得使用", prompt)
+
+    def test_retrieval_query_prefers_interviewer_and_removes_question_preamble(self):
+        service = load_audio_service()
+
+        self.assertEqual(
+            service.retrieval_query(
+                "这是蓝shot面试测试音频。第二题，codah是自己写的还是参考开源？哪些是你自己的贡献？",
+                "我靠！第二题，CODA是自己写的还是参考开源？哪些是你自己的贡献？",
+            ),
+            "CODA PaiCLI是自己写的还是参考开源？哪些是你自己的贡献？",
+        )
+        self.assertEqual(
+            service.retrieval_query("第8题。", "啊。"),
+            "啊",
+        )
 
     def test_submitting_question_writes_answer_and_history(self):
         service = load_audio_service()
@@ -302,6 +320,7 @@ class LanShot2Tests(unittest.TestCase):
                 )
             )
 
+            self.assertEqual(knowledge.query, "请介绍项目难点")
             saved_question = (output / "question.txt").read_text(encoding="utf-8")
             self.assertNotIn("负责订单系统重构", saved_question)
             self.assertIn("负责订单系统重构", client.question)

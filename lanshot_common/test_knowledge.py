@@ -194,7 +194,7 @@ class KnowledgeTests(unittest.TestCase):
         self.assertIn("资料.md", grounded)
         self.assertEqual(grounded.count("END_UNTRUSTED_KNOWLEDGE"), 1)
 
-    def test_empty_enabled_retrieval_forbids_inventing_personal_numbers(self):
+    def test_empty_retrieval_answers_general_questions_without_inventing_personal_facts(self):
         grounded = ground_text(
             "我的项目有多少篇文档？",
             KnowledgeSearchResult(
@@ -203,10 +203,14 @@ class KnowledgeTests(unittest.TestCase):
             ),
         )
 
-        self.assertIn("没有可靠的私有资料", grounded)
-        self.assertIn("不得给出", grounded)
-        self.assertIn("文档数量", grounded)
-        self.assertIn("不得自行改成公开技术解释", grounded)
+        self.assertIn("这不是拒绝回答的理由", grounded)
+        self.assertIn("通用技术、开放讨论", grounded)
+        self.assertIn("常见做法是", grounded)
+        self.assertIn("不得整题拒答", grounded)
+        self.assertIn("严禁给出任何替代数字", grounded)
+        self.assertIn("不得使用‘我做了’", grounded)
+        self.assertIn("不得擅自切换成同名公开产品", grounded)
+        self.assertIn("不得向用户说", grounded)
 
 
 if __name__ == "__main__":

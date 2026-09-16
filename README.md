@@ -72,6 +72,7 @@ unified/configure_knowledge.command
 - 检索结果标记为不可信资料，不执行文档中出现的指令。
 - 默认只把相关度分数大于等于 `0.5` 的召回送给回答模型，低分噪声视为无召回。
 - 未配置、无召回、OCR 失败、超时或百炼错误时，自动回退到原有模型回答，不让 F22/F23 流程卡住。
+- RAG 空召回时，通用技术题和开放设计题继续正常回答；个人项目题可给通用方案但不冒充已实现，未核实的精确数字不会编造替代区间。
 - 使用 `python3 unified/knowledge_config.py status` 查看配置，使用 `disable` / `enable` 临时关闭和开启。
 
 每轮检索的召回、分数和耗时保存为 `*-knowledge.json`，其中不包含 API Key。

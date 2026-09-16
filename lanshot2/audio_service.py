@@ -3,6 +3,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import signal
 import shutil
 import socket
@@ -468,6 +469,34 @@ def combined_transcript(system_text: str, microphone_text: str) -> str:
     )
 
 
+_QUESTION_MARKER = re.compile(
+    r"第\s*(?:[0-9]+|[一二三四五六七八九十百]+)\s*题\s*[，,:：。.!！?？]*\s*",
+    re.IGNORECASE,
+)
+_CODA_ALIAS = re.compile(r"(?<![A-Za-z0-9])codah?(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def retrieval_query(system_text: str, microphone_text: str) -> str:
+    """Build a concise RAG query from the interviewer channel.
+
+    Keep the saved question unchanged, but avoid sending duplicated two-channel
+    transcripts, test instructions, and microphone reactions to vector search.
+    """
+
+    def clean(value: str) -> str:
+        normalized = re.sub(r"\s+", " ", value).strip()
+        matches = list(_QUESTION_MARKER.finditer(normalized))
+        if matches:
+            normalized = normalized[matches[-1].end() :].strip()
+        normalized = _CODA_ALIAS.sub("CODA PaiCLI", normalized)
+        return normalized.strip(" ，,:：。.!！")
+
+    interviewer = clean(system_text)
+    if len(interviewer) >= 4:
+        return interviewer
+    return clean(microphone_text)
+
+
 def load_question_history(
     output: Path,
     limit: int = 6,
@@ -601,12 +630,13 @@ def submit_snapshot(
         )
         + "\n",
     )
-    knowledge = KnowledgeSearchResult.disabled(question)
+    search_query = retrieval_query(snapshot.system_text, snapshot.microphone_text)
+    knowledge = KnowledgeSearchResult.disabled(search_query)
     if knowledge_service is not None:
         try:
-            knowledge = knowledge_service.search(question)
+            knowledge = knowledge_service.search(search_query)
         except Exception:
-            knowledge = KnowledgeSearchResult.failed(question, "retrieval_exception")
+            knowledge = KnowledgeSearchResult.failed(search_query, "retrieval_exception")
     record_snapshot_knowledge(output, snapshot, knowledge)
     atomic_text(
         output / "question_status.json",

@@ -232,7 +232,7 @@ class GeminiQuestionClient:
         opener=None,
         url: str = GEMINI_URL,
         model: str = VOICE_MODEL,
-        thinking_level: str = "HIGH",
+        thinking_level: str = "MEDIUM",
     ) -> None:
         if not api_key.strip():
             raise ValueError("Google API key is empty")
@@ -1069,7 +1069,7 @@ def capture_stop(output: Path) -> int:
         print("停止采集超时", file=sys.stderr)
         return 1
     if was_running:
-        message = "本轮采集已停止并保存，按 F23 可以发送问题。"
+        message = "本轮采集已停止并保存，按 F22 可以发送问题。"
         archive_capture(
             output,
             combined_transcript(
@@ -1220,6 +1220,18 @@ def control_loop(output: Path) -> int:
         atomic_text(output / "capture.log", "submitting\n")
         write_capture_command(output, "submit")
 
+    def page_overlay(direction: str) -> None:
+        atomic_text(
+            output / "voice_overlay_command.txt",
+            f"{direction} {time.time_ns()}\n",
+        )
+
+    def page_up() -> None:
+        page_overlay("up")
+
+    def page_down() -> None:
+        page_overlay("down")
+
     def ignore_hotkey() -> None:
         return
 
@@ -1235,13 +1247,13 @@ def control_loop(output: Path) -> int:
         target=hotkey_listener.run,
         args=(
             hotkey_stop,
-            ignore_hotkey,
             submit_capture,
-            ignore_hotkey,
+            page_up,
+            page_down,
             ignore_hotkey,
             ignore_hotkey,
         ),
-        name="lanshot-voice-f23",
+        name="lanshot-voice-f22",
         daemon=True,
     )
     hotkey_thread.start()

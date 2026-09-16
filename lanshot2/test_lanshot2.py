@@ -60,6 +60,9 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('"voice_hotkey_status.txt"', source)
         self.assertIn('write_capture_command(output, "submit")', source)
         self.assertIn("if not overlay_process_id(output):", source)
+        self.assertIn('name="lanshot-voice-f22"', source)
+        self.assertIn('page_overlay("up")', source)
+        self.assertIn('page_overlay("down")', source)
 
     def test_voice_overlay_shows_both_transcripts_and_menu_icon(self):
         source = (
@@ -72,8 +75,10 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('"mic.fill"', source)
         self.assertIn('bodyHeight * 0.35', source)
         self.assertIn('title: "开始采集"', source)
-        self.assertIn('"F23 发送问题"', source)
-        self.assertIn('title: "发送问题（F23）"', source)
+        self.assertIn('"F22 发送问题 | F23/F24 翻页"', source)
+        self.assertIn('title: "发送问题（F22）"', source)
+        self.assertIn('(contentView as? VoicePanelContentView)?.pageUp()', source)
+        self.assertIn('(contentView as? VoicePanelContentView)?.pageDown()', source)
         self.assertIn('title: "退出 LanShot"', source)
         self.assertIn('title: "会话管理..."', source)
         self.assertIn('title: "继续所选会话"', source)
@@ -82,6 +87,17 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn("SessionManagerWindowController", source)
         self.assertIn('"shutdown \\(UUID().uuidString.lowercased())', source)
         self.assertIn("sharingType = .none", source)
+
+    def test_voice_window_size_uses_mode_specific_live_preferences(self):
+        source = (
+            ROOT.parent / "capture-exclusion-demo/CaptureExclusionDemo.swift"
+        ).read_text(encoding="utf-8")
+        self.assertIn('static let voiceWidth = "overlay.voice.width"', source)
+        self.assertIn('static let voiceHeight = "overlay.voice.height"', source)
+        self.assertIn("OverlayPreferences(isVoiceMode: answerMonitor.isVoiceMode)", source)
+        self.assertIn("Self.panelSize(preferences: preferences, fitting: visibleFrame)", source)
+        self.assertIn("preferences.widthRange.lowerBound", source)
+        self.assertNotIn("let panelSize = followLatest", source)
 
     def test_voice_question_uses_text_only_glm_request(self):
         service = load_audio_service()
@@ -123,7 +139,7 @@ class LanShot2Tests(unittest.TestCase):
             with mock.patch.object(service.subprocess, "run", return_value=google_result):
                 self.assertEqual(service.load_google_api_key(), "keychain-google")
 
-    def test_gemini_question_uses_developer_api_high_thinking_stream(self):
+    def test_gemini_question_uses_developer_api_medium_thinking_stream(self):
         service = load_audio_service()
         first = {
             "candidates": [
@@ -173,7 +189,7 @@ class LanShot2Tests(unittest.TestCase):
         self.assertEqual(payload["contents"][-1]["parts"][0]["text"], "本轮问题")
         self.assertEqual(
             payload["generationConfig"]["thinkingConfig"]["thinkingLevel"],
-            "HIGH",
+            "MEDIUM",
         )
         self.assertEqual(payload["generationConfig"]["maxOutputTokens"], 4096)
         self.assertEqual(opener.call_args.kwargs["timeout"], 20)
@@ -242,22 +258,6 @@ class LanShot2Tests(unittest.TestCase):
             service.retrieval_query("第8题。", "啊。"),
             "啊",
         )
-
-    def test_submitting_question_writes_answer_and_history(self):
-        service = load_audio_service()
-
-        class StubClient:
-            def ask(self, question, prompt, history=None):
-                self.question = question
-                self.prompt = prompt
-                self.history = history
-                return "最终答案"
-
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "audio"
-            output.mkdir()
-            (output / "interviewer.txt").write_text("请解释进程和线程", encoding="utf-8")
-            (output / "me.txt").write_text("我的回答", encoding="utf-8")
         self.assertEqual(
             service.retrieval_query(
                 "你接入的到底是模型还是接口？",
@@ -286,6 +286,22 @@ class LanShot2Tests(unittest.TestCase):
             "Memory Context",
             service.retrieval_query("CODA 的长期记忆具体怎么存？", ""),
         )
+
+    def test_submitting_question_writes_answer_and_history(self):
+        service = load_audio_service()
+
+        class StubClient:
+            def ask(self, question, prompt, history=None):
+                self.question = question
+                self.prompt = prompt
+                self.history = history
+                return "最终答案"
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "audio"
+            output.mkdir()
+            (output / "interviewer.txt").write_text("请解释进程和线程", encoding="utf-8")
+            (output / "me.txt").write_text("我的回答", encoding="utf-8")
             (output / "interviewer.wav").write_bytes(b"interviewer-audio")
             (output / "me.wav").write_bytes(b"microphone-audio")
             (output / "capture_session_id.txt").write_text("session-123\n", encoding="utf-8")

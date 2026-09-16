@@ -5,6 +5,8 @@ final class OverlayPreferences {
     private enum Key {
         static let width = "overlay.width"
         static let height = "overlay.height"
+        static let voiceWidth = "overlay.voice.width"
+        static let voiceHeight = "overlay.voice.height"
         static let fontSize = "overlay.fontSize"
         static let textRed = "overlay.text.red"
         static let textGreen = "overlay.text.green"
@@ -13,13 +15,35 @@ final class OverlayPreferences {
     }
 
     private let defaults: UserDefaults
+    private let isVoiceMode: Bool
+    let widthRange: ClosedRange<Double>
+    let heightRange: ClosedRange<Double>
     var onChange: (() -> Void)?
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, isVoiceMode: Bool = false) {
         self.defaults = defaults
+        self.isVoiceMode = isVoiceMode
+        let screens = NSScreen.screens.map(\.visibleFrame)
+        let primaryFrame = NSScreen.main?.visibleFrame
+            ?? screens.first
+            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let maximumWidth = max(320, (screens.map(\.width).max() ?? primaryFrame.width) - 20)
+        let maximumHeight = max(240, (screens.map(\.height).max() ?? primaryFrame.height) - 20)
+        widthRange = (isVoiceMode ? 320 : 160)...Double(maximumWidth)
+        heightRange = (isVoiceMode ? 240 : 160)...Double(maximumHeight)
+        let voiceDefaultWidth = min(
+            maximumWidth,
+            max(760, primaryFrame.width * 0.82)
+        )
+        let voiceDefaultHeight = min(
+            maximumHeight,
+            max(520, primaryFrame.height * 0.78)
+        )
         defaults.register(defaults: [
             Key.width: 256.0,
             Key.height: 256.0,
+            Key.voiceWidth: Double(voiceDefaultWidth),
+            Key.voiceHeight: Double(voiceDefaultHeight),
             Key.fontSize: 17.0,
             Key.textRed: 0.0,
             Key.textGreen: 0.0,
@@ -28,8 +52,16 @@ final class OverlayPreferences {
         ])
     }
 
-    var width: CGFloat { CGFloat(defaults.double(forKey: Key.width)) }
-    var height: CGFloat { CGFloat(defaults.double(forKey: Key.height)) }
+    private var widthKey: String { isVoiceMode ? Key.voiceWidth : Key.width }
+    private var heightKey: String { isVoiceMode ? Key.voiceHeight : Key.height }
+
+    var width: CGFloat {
+        CGFloat(defaults.double(forKey: widthKey).clamped(to: widthRange))
+    }
+
+    var height: CGFloat {
+        CGFloat(defaults.double(forKey: heightKey).clamped(to: heightRange))
+    }
     var fontSize: CGFloat { CGFloat(defaults.double(forKey: Key.fontSize)) }
     var textOpacity: CGFloat { CGFloat(defaults.double(forKey: Key.textOpacity)) }
 
@@ -43,11 +75,11 @@ final class OverlayPreferences {
     }
 
     func setWidth(_ value: Double) {
-        set(value.clamped(to: 160...1200), forKey: Key.width)
+        set(value.clamped(to: widthRange), forKey: widthKey)
     }
 
     func setHeight(_ value: Double) {
-        set(value.clamped(to: 160...1200), forKey: Key.height)
+        set(value.clamped(to: heightRange), forKey: heightKey)
     }
 
     func setFontSize(_ value: Double) {
@@ -362,7 +394,7 @@ final class LatestAnswerMonitor {
         let hotkeyReady = readText(
             from: displayDirectory.appendingPathComponent("voice_hotkey_status.txt")
         ) == "ready"
-        let submitHint = hotkeyReady ? "F23 发送问题" : "菜单发送问题"
+        let submitHint = hotkeyReady ? "F22 发送问题 | F23/F24 翻页" : "菜单发送问题"
         switch state {
         case "running":
             let pidURL = displayDirectory.appendingPathComponent("capture.pid")
@@ -486,12 +518,7 @@ final class FloatingPanel: NSPanel {
         self.followLatest = followLatest
         self.onToggleCapture = onToggleCapture
         let visibleFrame = NSScreen.main?.visibleFrame ?? .zero
-        let panelSize = followLatest
-            ? NSSize(
-                width: min(visibleFrame.width - 40, max(760, visibleFrame.width * 0.82)),
-                height: min(visibleFrame.height - 40, max(520, visibleFrame.height * 0.78))
-            )
-            : NSSize(width: preferences.width, height: preferences.height)
+        let panelSize = Self.panelSize(preferences: preferences, fitting: visibleFrame)
         super.init(
             contentRect: NSRect(origin: .zero, size: panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -513,16 +540,12 @@ final class FloatingPanel: NSPanel {
 
     func applyPreferences(preserveCenter: Bool = true) {
         let oldCenter = NSPoint(x: frame.midX, y: frame.midY)
-        let visibleFrame = NSScreen.main?.visibleFrame ?? .zero
-        let size = followLatest
-            ? NSSize(
-                width: min(visibleFrame.width - 40, max(760, visibleFrame.width * 0.82)),
-                height: min(visibleFrame.height - 40, max(520, visibleFrame.height * 0.78))
-            )
-            : NSSize(width: preferences.width, height: preferences.height)
-        let origin = preserveCenter
+        let visibleFrame = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
+        let size = Self.panelSize(preferences: preferences, fitting: visibleFrame)
+        let requestedOrigin = preserveCenter
             ? NSPoint(x: oldCenter.x - size.width / 2, y: oldCenter.y - size.height / 2)
             : frame.origin
+        let origin = Self.clampedOrigin(requestedOrigin, size: size, visibleFrame: visibleFrame)
 
         setFrame(NSRect(origin: origin, size: size), display: true)
         sharingType = .none
@@ -554,11 +577,19 @@ final class FloatingPanel: NSPanel {
     }
 
     func pageDown() {
-        (contentView as? PanelContentView)?.pageDown()
+        if let content = contentView as? PanelContentView {
+            content.pageDown()
+        } else {
+            (contentView as? VoicePanelContentView)?.pageDown()
+        }
     }
 
     func pageUp() {
-        (contentView as? PanelContentView)?.pageUp()
+        if let content = contentView as? PanelContentView {
+            content.pageUp()
+        } else {
+            (contentView as? VoicePanelContentView)?.pageUp()
+        }
     }
 
     func moveToMouse() {
@@ -591,6 +622,31 @@ final class FloatingPanel: NSPanel {
             y: visibleFrame.maxY - frame.height - 18
         )
         setFrameOrigin(origin)
+    }
+
+    private static func panelSize(
+        preferences: OverlayPreferences,
+        fitting visibleFrame: NSRect
+    ) -> NSSize {
+        guard visibleFrame.width > 0, visibleFrame.height > 0 else {
+            return NSSize(width: preferences.width, height: preferences.height)
+        }
+        return NSSize(
+            width: min(preferences.width, max(160, visibleFrame.width - 20)),
+            height: min(preferences.height, max(160, visibleFrame.height - 20))
+        )
+    }
+
+    private static func clampedOrigin(
+        _ requested: NSPoint,
+        size: NSSize,
+        visibleFrame: NSRect
+    ) -> NSPoint {
+        guard visibleFrame.width > 0, visibleFrame.height > 0 else { return requested }
+        return NSPoint(
+            x: min(max(requested.x, visibleFrame.minX), visibleFrame.maxX - size.width),
+            y: min(max(requested.y, visibleFrame.minY), visibleFrame.maxY - size.height)
+        )
     }
 }
 
@@ -903,6 +959,41 @@ final class VoicePanelContentView: NSView {
         answerTextView.scrollToEndOfDocument(nil)
     }
 
+    func pageDown() {
+        scrollAnswer(down: true)
+    }
+
+    func pageUp() {
+        scrollAnswer(down: false)
+    }
+
+    private func scrollAnswer(down: Bool) {
+        guard
+            let scrollView = answerScrollView,
+            let documentView = scrollView.documentView
+        else { return }
+        let clipView = scrollView.contentView
+        let maximumOffset = max(0, documentView.bounds.height - clipView.bounds.height)
+        let currentOffset = clipView.bounds.origin.y
+        let offset: CGFloat
+        if down {
+            offset = maximumOffset == 0 || currentOffset >= maximumOffset - 1
+                ? 0
+                : min(maximumOffset, currentOffset + clipView.bounds.height * 0.5)
+        } else {
+            offset = maximumOffset == 0 || currentOffset <= 1
+                ? maximumOffset
+                : max(0, currentOffset - clipView.bounds.height * 0.5)
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.allowsImplicitAnimation = true
+            clipView.animator().setBoundsOrigin(NSPoint(x: 0, y: offset))
+        } completionHandler: {
+            scrollView.reflectScrolledClipView(clipView)
+        }
+    }
+
     private func makeLabel(
         text: String = "",
         size: CGFloat,
@@ -996,8 +1087,16 @@ final class SettingsViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        widthSlider = makeSlider(min: 160, max: 1200, action: #selector(widthChanged))
-        heightSlider = makeSlider(min: 160, max: 1200, action: #selector(heightChanged))
+        widthSlider = makeSlider(
+            min: preferences.widthRange.lowerBound,
+            max: preferences.widthRange.upperBound,
+            action: #selector(widthChanged)
+        )
+        heightSlider = makeSlider(
+            min: preferences.heightRange.lowerBound,
+            max: preferences.heightRange.upperBound,
+            action: #selector(heightChanged)
+        )
         fontSlider = makeSlider(min: 10, max: 48, action: #selector(fontChanged))
         textOpacitySlider = makeSlider(min: 0, max: 1, action: #selector(textOpacityChanged))
 
@@ -1519,8 +1618,8 @@ final class SessionManagerWindowController: NSWindowController {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let preferences = OverlayPreferences()
     private let answerMonitor = LatestAnswerMonitor()
+    private lazy var preferences = OverlayPreferences(isVoiceMode: answerMonitor.isVoiceMode)
     private var panel: FloatingPanel?
     private var settingsController: SettingsWindowController?
     private var sessionController: SessionManagerWindowController?
@@ -1606,7 +1705,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(captureItem)
             captureToggleItem = captureItem
             let submitItem = NSMenuItem(
-                title: "发送问题（F23）",
+                title: "发送问题（F22）",
                 action: #selector(submitVoiceQuestion),
                 keyEquivalent: ""
             )

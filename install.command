@@ -44,19 +44,6 @@ if ! /usr/bin/security find-generic-password \
   unset api_key
 fi
 
-if ! /usr/bin/security find-generic-password \
-  -s com.lanshot.google -a GEMINI_API_KEY -w >/dev/null 2>&1; then
-  print -n -- "请输入 Gemini Developer API Key（留空则使用 GLM 备用模型）："
-  read -s google_api_key
-  print
-  if [[ -n "$google_api_key" ]]; then
-    /usr/bin/security add-generic-password -U \
-      -s com.lanshot.google -a GEMINI_API_KEY \
-      -w "$google_api_key" >/dev/null
-  fi
-  unset google_api_key
-fi
-
 print -- "正在编译悬浮窗..."
 /bin/sh "$ROOT/capture-exclusion-demo/build.sh"
 

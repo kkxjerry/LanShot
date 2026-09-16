@@ -38,12 +38,12 @@ OVERLAY_EXECUTABLE = OVERLAY_APP / "Contents/MacOS/CaptureExclusionDemo"
 DEFAULT_OUTPUT = Path.home() / "Library/Application Support/LanShot2/audio"
 VOICE_PROMPT = ROOT / "voice_question_prompt.txt"
 BAILIAN_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-BAILIAN_FALLBACK_MODEL = "glm-5.3"
+VOICE_MODEL = "glm-5.3"
+GEMINI_MODEL = "gemini-3.8-flash"
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     "gemini-3.8-flash:streamGenerateContent?alt=sse"
 )
-VOICE_MODEL = "gemini-3.8-flash"
 
 
 @dataclass(frozen=True)
@@ -231,7 +231,7 @@ class GeminiQuestionClient:
         *,
         opener=None,
         url: str = GEMINI_URL,
-        model: str = VOICE_MODEL,
+        model: str = GEMINI_MODEL,
         thinking_level: str = "MEDIUM",
     ) -> None:
         if not api_key.strip():
@@ -351,14 +351,16 @@ class VoiceQuestionClient:
         *,
         opener=urllib.request.urlopen,
         url: str = BAILIAN_URL,
-        model: str = BAILIAN_FALLBACK_MODEL,
+        model: str = VOICE_MODEL,
     ) -> None:
         self.api_key = api_key
         self.opener = opener
         self.url = url
         self.model = model
+        self.last_timing: dict = {}
 
     def ask(self, question: str, prompt: str, history: list[dict] | None = None) -> str:
+        started = time.monotonic()
         messages = [{"role": "system", "content": prompt}]
         for item in history or []:
             messages.append({"role": "user", "content": item["input"]})
@@ -382,7 +384,7 @@ class VoiceQuestionClient:
             method="POST",
         )
         try:
-            with self.opener(request, timeout=120) as response:
+            with self.opener(request, timeout=30) as response:
                 body = response.read(2 * 1024 * 1024)
         except urllib.error.HTTPError as error:
             status = error.code
@@ -397,6 +399,12 @@ class VoiceQuestionClient:
             raise RuntimeError("百炼返回了无效结果") from error
         if not isinstance(answer, str) or not answer.strip():
             raise RuntimeError("大模型没有返回答案")
+        self.last_timing = {
+            "provider": "bailian_glm",
+            "streaming": False,
+            "thinking_level": "low",
+            "complete_ms": round((time.monotonic() - started) * 1000),
+        }
         return answer.strip().replace("```python", "").replace("```", "").strip()
 
 
@@ -452,12 +460,7 @@ QuestionClient = VoiceQuestionClient | GeminiQuestionClient | FallbackQuestionCl
 
 
 def default_question_client() -> QuestionClient:
-    fallback = VoiceQuestionClient(load_api_key())
-    try:
-        primary = GeminiQuestionClient(load_google_api_key())
-    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
-        return fallback
-    return FallbackQuestionClient(primary, fallback)
+    return VoiceQuestionClient(load_api_key())
 
 
 def combined_transcript(system_text: str, microphone_text: str) -> str:

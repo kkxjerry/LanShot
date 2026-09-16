@@ -122,6 +122,20 @@ class LanShot2Tests(unittest.TestCase):
         self.assertEqual(payload["messages"][2], {"role": "assistant", "content": "上一题答案"})
         self.assertEqual(payload["messages"][3], {"role": "user", "content": "什么是 GIL？"})
         self.assertEqual(request.headers["Authorization"], "Bearer secret-key")
+        self.assertEqual(opener.call_args.kwargs["timeout"], 30)
+        self.assertEqual(client.last_timing["provider"], "bailian_glm")
+
+    def test_default_question_client_uses_glm_without_loading_gemini_key(self):
+        service = load_audio_service()
+        with (
+            mock.patch.object(service, "load_api_key", return_value="bailian-key"),
+            mock.patch.object(service, "load_google_api_key") as google_key,
+        ):
+            client = service.default_question_client()
+
+        self.assertIsInstance(client, service.VoiceQuestionClient)
+        self.assertEqual(client.model, "glm-5.3")
+        google_key.assert_not_called()
 
     def test_macos_keychain_wins_over_stale_environment_keys(self):
         service = load_audio_service()

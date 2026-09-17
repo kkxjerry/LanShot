@@ -24,6 +24,7 @@ from queue import Queue
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from lanshot_common.interview_rag import route_question, filter_knowledge, generation_prompt  # noqa: E402
 from lanshot_common.knowledge import (  # noqa: E402
     KnowledgeSearchResult,
     KnowledgeService,
@@ -73,6 +74,47 @@ def atomic_text(path: Path, value: str) -> None:
     temporary.write_text(value, encoding="utf-8")
     os.chmod(temporary, 0o600)
     os.replace(temporary, path)
+
+
+_PROMPT_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def get_voice_prompt(path: Path = VOICE_PROMPT) -> str:
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return ""
+    cached = _PROMPT_CACHE.get(str(path))
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        content = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        content = ""
+    _PROMPT_CACHE[str(path)] = (mtime, content)
+    return content
+
+
+class ThrottledWriter:
+    """Buffers rapid streaming string updates to reduce atomic file replacement churn."""
+
+    def __init__(self, path: Path, min_interval: float = 0.08) -> None:
+        self.path = path
+        self.min_interval = min_interval
+        self.last_write = 0.0
+        self.last_text = ""
+
+    def write(self, text: str) -> None:
+        self.last_text = text
+        now = time.monotonic()
+        if now - self.last_write >= self.min_interval:
+            atomic_text(self.path, f"{text}\n")
+            self.last_write = now
+
+    def flush(self) -> None:
+        if self.last_text:
+            atomic_text(self.path, f"{self.last_text}\n")
+            self.last_write = time.monotonic()
 
 
 def current_conversation_id(output: Path) -> str:
@@ -286,6 +328,7 @@ class GeminiQuestionClient:
         usage: dict = {}
         event_count = 0
         received_bytes = 0
+        last_update = 0.0
         try:
             with self.opener(request, timeout=20) as response:
                 for raw_line in response:
@@ -322,8 +365,10 @@ class GeminiQuestionClient:
                             if first_visible_ms is None:
                                 first_visible_ms = round((time.monotonic() - started) * 1000)
                             answer += text
-                            if on_update is not None:
+                            now = time.monotonic()
+                            if on_update is not None and (not last_update or now - last_update >= 0.06):
                                 on_update(answer.strip())
+                                last_update = now
         except urllib.error.HTTPError as error:
             status = error.code
             error.close()
@@ -332,6 +377,8 @@ class GeminiQuestionClient:
             raise RuntimeError("无法连接 Gemini 服务") from error
         if not isinstance(answer, str) or not answer.strip():
             raise RuntimeError("Gemini 没有返回答案")
+        if on_update is not None:
+            on_update(answer.strip())
         self.last_usage = usage
         self.last_timing = {
             "provider": "gemini_developer_api",
@@ -407,6 +454,10 @@ class VoiceQuestionClient:
         }
         return answer.strip().replace("```python", "").replace("```", "").strip()
 
+    def ask_stream(self, question: str, prompt: str, history: list[dict] | None = None, *, on_update=None) -> str:
+        from lanshot_common.bailian_stream import ask_stream
+        return ask_stream(self, question, prompt, history, on_update=on_update)
+
 
 class FallbackQuestionClient:
     def __init__(self, primary: GeminiQuestionClient, fallback: VoiceQuestionClient) -> None:
@@ -472,61 +523,16 @@ def combined_transcript(system_text: str, microphone_text: str) -> str:
     )
 
 
-_QUESTION_MARKER = re.compile(
-    r"第\s*(?:[0-9]+|[一二三四五六七八九十百]+)\s*题\s*[，,:：。.!！?？]*\s*",
-    re.IGNORECASE,
-)
-_CODA_ALIAS = re.compile(r"(?<![A-Za-z0-9])codah?(?![A-Za-z0-9])", re.IGNORECASE)
-_RETRIEVAL_EXPANSIONS = (
-    (re.compile(r"(?:单\s*Agent|多\s*Agent|单智能体|多智能体)", re.IGNORECASE), "ReAct Plan Team 模式选择"),
-    (re.compile(r"(?:长期记忆|记忆怎么|Memory)", re.IGNORECASE), "Memory Context"),
-)
-_FOLLOWUP_MARKER = re.compile(
-    r"(?:这个|这种|这些|它|刚才|上面|前面|你说的|你提到的|你接入的|"
-    r"为什么是\s*(?:[0-9]+|[一二三四五六七八九十百]+)|那(?:么|个|为什么|怎么))",
-    re.IGNORECASE,
-)
-
-
 def retrieval_query(
     system_text: str,
     microphone_text: str,
     *,
     previous_question: str = "",
 ) -> str:
-    """Build a concise RAG query from the interviewer channel.
-
-    Keep the saved question unchanged, but avoid sending duplicated two-channel
-    transcripts, test instructions, and microphone reactions to vector search.
-    For an obviously contextual follow-up, prepend only the previous interviewer
-    question rather than the whole conversation.
-    """
-
-    def clean(value: str) -> str:
-        normalized = re.sub(r"\s+", " ", value).strip()
-        matches = list(_QUESTION_MARKER.finditer(normalized))
-        if matches:
-            normalized = normalized[matches[-1].end() :].strip()
-        normalized = _CODA_ALIAS.sub("CODA PaiCLI", normalized)
-        expansions = [label for pattern, label in _RETRIEVAL_EXPANSIONS if pattern.search(normalized)]
-        if expansions:
-            normalized = f"{normalized} {' '.join(expansions)}"
-        return normalized.strip(" ，,:：。.!！")
-
-    def previous_interviewer(value: str) -> str:
-        if "系统声音识别：" in value:
-            value = value.split("系统声音识别：", 1)[1]
-        if "麦克风识别：" in value:
-            value = value.split("麦克风识别：", 1)[0]
-        return clean(value)
-
-    interviewer = clean(system_text)
-    current = interviewer if len(interviewer) >= 4 else clean(microphone_text)
-    if current and previous_question and _FOLLOWUP_MARKER.search(current):
-        previous = previous_interviewer(previous_question)
-        if previous and previous != current:
-            return f"上一题：{previous}\n当前追问：{current}"
-    return current
+    """Compatibility wrapper for the shared retrieval/generation turn router."""
+    return route_question(
+        system_text, microphone_text, previous_question=previous_question,
+    ).query
 
 
 def load_question_history(
@@ -623,9 +629,14 @@ def record_snapshot_knowledge(
     output: Path,
     snapshot: QuestionSnapshot,
     result: KnowledgeSearchResult,
+    *,
+    routing: dict | None = None,
+    selection: dict | None = None,
 ) -> None:
     payload = {
         "mode": "voice",
+        "routing": routing or {},
+        "selection": selection or {},
         "capture_session_id": snapshot.session_id,
         "conversation_id": snapshot.conversation_id,
         "at": time.time(),
@@ -646,6 +657,7 @@ def submit_snapshot(
     client: QuestionClient | None = None,
     knowledge_service: KnowledgeService | None = None,
 ) -> bool:
+    started = time.monotonic()
     question = snapshot.question
     if not snapshot.system_text and not snapshot.microphone_text:
         answer = "两路都没有识别到文字，请重新采集。"
@@ -662,20 +674,32 @@ def submit_snapshot(
         )
         + "\n",
     )
-    history = load_question_history(output, conversation_id=snapshot.conversation_id)
+    history = load_question_history(output, limit=1, conversation_id=snapshot.conversation_id)
     previous_question = history[-1]["input"] if history else ""
-    search_query = retrieval_query(
-        snapshot.system_text,
-        snapshot.microphone_text,
+    route = route_question(
+        snapshot.system_text, snapshot.microphone_text,
         previous_question=previous_question,
     )
+    search_query = route.query
     knowledge = KnowledgeSearchResult.disabled(search_query)
-    if knowledge_service is not None:
+    if knowledge_service is not None and route.use_knowledge:
         try:
             knowledge = knowledge_service.search(search_query)
         except Exception:
             knowledge = KnowledgeSearchResult.failed(search_query, "retrieval_exception")
-    record_snapshot_knowledge(output, snapshot, knowledge)
+    knowledge, selection = filter_knowledge(knowledge, route)
+    record_snapshot_knowledge(
+        output, snapshot, knowledge, routing=route.as_dict(), selection=selection,
+    )
+    if route.kind == "incomplete":
+        answer = "这段还没有完整问题，请补充问题后再提交。"
+        atomic_text(output / "answer.txt", f"{answer}\n")
+        atomic_text(output / "question_status.json", json.dumps(
+            {"status": "incomplete", "routing": route.as_dict(), "at": time.time()},
+            ensure_ascii=False,
+        ) + "\n")
+        update_snapshot_archive(snapshot, answer)
+        return False
     atomic_text(
         output / "question_status.json",
         json.dumps(
@@ -690,17 +714,25 @@ def submit_snapshot(
         + "\n",
     )
     try:
-        prompt = VOICE_PROMPT.read_text(encoding="utf-8").strip()
+        prompt = generation_prompt(get_voice_prompt(), route)
         active_client = client or default_question_client()
-        grounded_question = ground_text(question, knowledge)
+        grounded_question = ground_text(route.generation_input(), knowledge)
+        # Generated answers are not verified history. Only the previous original
+        # interviewer turn is carried in route.generation_input() for follow-ups.
+        history = []
+        generation_started_ms = round((time.monotonic() - started) * 1000)
         streaming_ask = getattr(active_client, "ask_stream", None)
+        throttled_writer = ThrottledWriter(output / "answer.txt", min_interval=0.08)
         if callable(streaming_ask):
-            answer = streaming_ask(
-                grounded_question,
-                prompt,
-                history=history,
-                on_update=lambda partial: atomic_text(output / "answer.txt", f"{partial}\n"),
-            )
+            try:
+                answer = streaming_ask(
+                    grounded_question,
+                    prompt,
+                    history=history,
+                    on_update=throttled_writer.write,
+                )
+            finally:
+                throttled_writer.flush()
         else:
             answer = active_client.ask(grounded_question, prompt, history=history)
     except (OSError, RuntimeError) as error:
@@ -724,7 +756,15 @@ def submit_snapshot(
     atomic_text(output / "answer.txt", f"{answer}\n")
     model_used = getattr(active_client, "model", VOICE_MODEL)
     fallback_used = bool(getattr(active_client, "fallback_used", False))
-    generation = getattr(active_client, "last_timing", {})
+    generation = dict(getattr(active_client, "last_timing", {}))
+    generation.update({
+        "retrieval_ms": knowledge.elapsed_ms,
+        "input_chars": len(grounded_question),
+        "route": route.kind,
+        "end_to_end_ms": round((time.monotonic() - started) * 1000),
+    })
+    if isinstance(generation.get("first_visible_ms"), (int, float)):
+        generation["first_visible_total_ms"] = generation_started_ms + generation["first_visible_ms"]
     atomic_text(
         output / "question_status.json",
         json.dumps(
@@ -951,11 +991,12 @@ def prepare(output: Path) -> int:
     try:
         start_control(output)
         start_overlay(output)
+        write_capture_command(output, "start")
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         stop_control(output)
         print(str(error), file=sys.stderr)
         return 1
-    print("语音模式已就绪，点击悬浮窗或菜单栏中的“开始采集”后才会录音")
+    print("语音模式已就绪，已自动开始双路音频采集")
     return 0
 
 

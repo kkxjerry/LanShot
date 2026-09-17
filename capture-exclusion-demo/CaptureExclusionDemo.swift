@@ -1,4 +1,6 @@
 import AppKit
+import Darwin
+import UniformTypeIdentifiers
 
 @MainActor
 final class OverlayPreferences {
@@ -227,6 +229,14 @@ final class LatestAnswerMonitor {
         )
     }
 
+    func ensureVoiceCaptureStarted() {
+        guard isVoiceMode else { return }
+        let state = readText(from: displayDirectory.appendingPathComponent("capture.log"))
+        if state != "running" && state != "starting" && state != "submitting" {
+            toggleVoiceCapture()
+        }
+    }
+
     func submitVoiceQuestion() {
         guard isVoiceMode else { return }
         let state = readText(from: displayDirectory.appendingPathComponent("capture.log"))
@@ -328,19 +338,20 @@ final class LatestAnswerMonitor {
         reloadAnswer()
         lastPageCommand = readText(from: pageCommandURL)
         pageCommandInitialized = true
-        let timer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.10, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.reloadAnswer()
                 self?.reloadPageCommand()
             }
         }
-        timer.tolerance = 0.08
+        timer.tolerance = 0.02
         self.timer = timer
     }
 
     func stop() {
         timer?.invalidate()
         timer = nil
+        fileCache.removeAll()
         if isVoiceMode {
             try? FileManager.default.removeItem(
                 at: displayDirectory.appendingPathComponent("voice_overlay.pid")
@@ -352,6 +363,10 @@ final class LatestAnswerMonitor {
         } else if stateURL != nil {
             writeJSON(["status": "stopped", "at": Date().timeIntervalSince1970], name: "overlay_status.json")
         }
+    }
+
+    var isVoiceCapturing: Bool {
+        lastVoiceSnapshot?.isCapturing ?? false
     }
 
     private func reloadAnswer() {
@@ -429,9 +444,9 @@ final class LatestAnswerMonitor {
         case "switching":
             return "正在切换到截屏模式..."
         case let value where value.hasPrefix("failed:"):
-            return "采集失败 | 点击开始采集"
+            return "采集异常 | \(submitHint)"
         default:
-            return "尚未采集 | 点击开始采集 | \(submitHint)"
+            return "就绪 | \(submitHint)"
         }
     }
 
@@ -484,13 +499,30 @@ final class LatestAnswerMonitor {
         }
     }
 
+    private var fileCache: [URL: (sec: Int, nsec: Int, size: Int64, text: String)] = [:]
+
     private func readText(from url: URL) -> String? {
+        var statBuf = stat()
+        guard stat(url.path, &statBuf) == 0 else {
+            fileCache.removeValue(forKey: url)
+            return nil
+        }
+        let sec = Int(statBuf.st_mtimespec.tv_sec)
+        let nsec = Int(statBuf.st_mtimespec.tv_nsec)
+        let size = Int64(statBuf.st_size)
+        if let cached = fileCache[url], cached.sec == sec, cached.nsec == nsec, cached.size == size {
+            return cached.text
+        }
         guard
             let data = try? Data(contentsOf: url),
             let text = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
             !text.isEmpty
-        else { return nil }
+        else {
+            fileCache.removeValue(forKey: url)
+            return nil
+        }
+        fileCache[url] = (sec, nsec, size, text)
         return text
     }
 }
@@ -755,9 +787,22 @@ final class PanelContentView: NSView {
     }
 
     func updateAnswer(_ answer: String) {
+        guard answerTextView?.string != answer else { return }
+        let wasNearBottom: Bool
+        if let scrollView = answerScrollView, let documentView = scrollView.documentView {
+            let clipView = scrollView.contentView
+            let maximumOffset = max(0, documentView.bounds.height - clipView.bounds.height)
+            wasNearBottom = clipView.bounds.origin.y >= maximumOffset - 48
+        } else {
+            wasNearBottom = true
+        }
+        let previousLength = answerTextView?.string.count ?? 0
+        let isReset = answer.count < previousLength / 2 || answer.hasPrefix("等待") || answer.hasPrefix("正在生成")
         answerTextView?.string = answer
         if followLatest {
-            answerTextView?.scrollToEndOfDocument(nil)
+            if wasNearBottom || isReset {
+                answerTextView?.scrollToEndOfDocument(nil)
+            }
         } else {
             answerTextView?.scrollToBeginningOfDocument(nil)
         }
@@ -818,7 +863,6 @@ final class VoicePanelContentView: NSView {
     private let textColor: NSColor
     private let textOpacity: CGFloat
     private var statusLabel: NSTextField!
-    private var toggleButton: NSButton!
     private var systemTitle: NSTextField!
     private var microphoneTitle: NSTextField!
     private var answerTitle: NSTextField!
@@ -843,12 +887,6 @@ final class VoicePanelContentView: NSView {
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
         statusLabel = makeLabel(size: 13, weight: .semibold)
-        toggleButton = NSButton(
-            title: "开始采集",
-            target: self,
-            action: #selector(toggleCapture)
-        )
-        toggleButton.bezelStyle = .rounded
         systemTitle = makeLabel(text: "系统声音", size: 14, weight: .bold)
         microphoneTitle = makeLabel(text: "麦克风", size: 14, weight: .bold)
         answerTitle = makeLabel(text: "答案", size: 14, weight: .bold)
@@ -858,7 +896,6 @@ final class VoicePanelContentView: NSView {
 
         for view in [
             statusLabel,
-            toggleButton,
             systemTitle,
             microphoneTitle,
             answerTitle,
@@ -880,20 +917,13 @@ final class VoicePanelContentView: NSView {
         let inset: CGFloat = 12
         let gap: CGFloat = 12
         let titleHeight: CGFloat = 22
-        let headerHeight: CGFloat = 30
-        let buttonWidth: CGFloat = 144
+        let headerHeight: CGFloat = 28
         let contentWidth = max(0, bounds.width - inset * 2)
         let headerY = max(inset, bounds.height - inset - headerHeight)
         statusLabel.frame = NSRect(
             x: inset,
             y: headerY,
-            width: max(0, contentWidth - buttonWidth - gap),
-            height: headerHeight
-        )
-        toggleButton.frame = NSRect(
-            x: max(inset, bounds.width - inset - buttonWidth),
-            y: headerY,
-            width: buttonWidth,
+            width: contentWidth,
             height: headerHeight
         )
 
@@ -947,16 +977,34 @@ final class VoicePanelContentView: NSView {
     }
 
     func update(_ snapshot: VoiceOverlaySnapshot) {
-        statusLabel.stringValue = snapshot.status
-        statusLabel.textColor = (snapshot.isCapturing ? NSColor.systemGreen : textColor)
+        if statusLabel.stringValue != snapshot.status {
+            statusLabel.stringValue = snapshot.status
+        }
+        let targetColor = (snapshot.isCapturing ? NSColor.systemGreen : textColor)
             .withAlphaComponent(max(textOpacity, 0.55))
-        toggleButton.title = snapshot.isCapturing ? "停止采集" : "开始采集"
-        systemTextView.string = snapshot.interviewer
-        microphoneTextView.string = snapshot.me
-        answerTextView.string = snapshot.answer
-        systemTextView.scrollToEndOfDocument(nil)
-        microphoneTextView.scrollToEndOfDocument(nil)
-        answerTextView.scrollToEndOfDocument(nil)
+        if statusLabel.textColor != targetColor {
+            statusLabel.textColor = targetColor
+        }
+        updateTextView(systemTextView, in: systemScrollView, with: snapshot.interviewer)
+        updateTextView(microphoneTextView, in: microphoneScrollView, with: snapshot.me)
+        updateTextView(answerTextView, in: answerScrollView, with: snapshot.answer)
+    }
+
+    private func updateTextView(_ textView: NSTextView, in scrollView: NSScrollView, with newText: String) {
+        guard textView.string != newText else { return }
+        let wasNearBottom = isScrolledNearBottom(scrollView: scrollView)
+        let isReset = newText.count < textView.string.count / 2 || newText.hasPrefix("等待") || newText.hasPrefix("正在生成")
+        textView.string = newText
+        if wasNearBottom || isReset {
+            textView.scrollToEndOfDocument(nil)
+        }
+    }
+
+    private func isScrolledNearBottom(scrollView: NSScrollView, threshold: CGFloat = 48) -> Bool {
+        guard let documentView = scrollView.documentView else { return true }
+        let clipView = scrollView.contentView
+        let maximumOffset = max(0, documentView.bounds.height - clipView.bounds.height)
+        return clipView.bounds.origin.y >= maximumOffset - threshold
     }
 
     func pageDown() {
@@ -1360,9 +1408,14 @@ final class SessionManagerViewController: NSViewController, NSTableViewDataSourc
             target: self,
             action: #selector(activateSelectedSession)
         )
+        let exportButton = NSButton(
+            title: "导出 TXT",
+            target: self,
+            action: #selector(exportSelectedSession)
+        )
         let refreshButton = NSButton(title: "刷新", target: self, action: #selector(reloadSessions))
         let folderButton = NSButton(title: "打开历史目录", target: self, action: #selector(openHistory))
-        let toolbar = NSStackView(views: [newButton, activateButton, refreshButton, folderButton])
+        let toolbar = NSStackView(views: [newButton, activateButton, exportButton, refreshButton, folderButton])
         toolbar.orientation = .horizontal
         toolbar.spacing = 8
         toolbar.translatesAutoresizingMaskIntoConstraints = false
@@ -1486,7 +1539,9 @@ final class SessionManagerViewController: NSViewController, NSTableViewDataSourc
             )
         }
         for value in readJSONLines(rootURL.appendingPathComponent("conversation_history.jsonl")) {
-            let id = value["conversation_id"] as? String ?? "legacy"
+            let id = value["conversation_id"] as? String
+                ?? value["session_id"] as? String
+                ?? "legacy"
             let created = value["at"] as? Double ?? 0
             var session = records[id] ?? ConversationSession(
                 id: id,
@@ -1527,26 +1582,96 @@ final class SessionManagerViewController: NSViewController, NSTableViewDataSourc
         }
     }
 
-    private func showSelectedSession() {
-        guard let session = selectedSession else { return }
+    private func formattedSessionText(for session: ConversationSession) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         var sections = [
-            session.title,
+            "============================================================",
+            "面试会话：\(session.title)",
+            "会话标识：\(session.id)",
             "创建时间：\(formatter.string(from: session.createdAt))",
             "问题数量：\(session.messages.count)",
+            "============================================================",
         ]
         for (index, message) in session.messages.enumerated() {
+            let input = message.input.trimmingCharacters(in: .whitespacesAndNewlines)
+            let answer = message.answer.trimmingCharacters(in: .whitespacesAndNewlines)
             sections.append(
-                "第 \(index + 1) 题 · \(formatter.string(from: message.at))\n\n"
-                    + "问题\n\(message.input)\n\n答案\n\(message.answer)"
+                """
+                【第 \(index + 1) 题 · \(formatter.string(from: message.at))】
+
+                --- 问题输入 ---
+                \(input)
+
+                --- 模型回答 ---
+                \(answer)
+                """
             )
         }
         if session.messages.isEmpty {
-            sections.append("当前会话尚无问题。")
+            sections.append("（当前会话尚无问题记录。）")
         }
-        detailTextView.string = sections.joined(separator: "\n\n----------------\n\n")
+        return sections.joined(separator: "\n\n------------------------------------------------------------\n\n")
+    }
+
+    private func showSelectedSession() {
+        guard let session = selectedSession else {
+            detailTextView.string = "尚无选中的会话。"
+            return
+        }
+        detailTextView.string = formattedSessionText(for: session)
         detailTextView.scrollToBeginningOfDocument(nil)
+    }
+
+    @objc private func exportSelectedSession() {
+        guard let session = selectedSession else {
+            let alert = NSAlert()
+            alert.messageText = "请先选择一个会话"
+            alert.informativeText = "左侧列表中未选中任何会话。"
+            alert.runModal()
+            return
+        }
+        let savePanel = NSSavePanel()
+        savePanel.title = "导出面试会话为 TXT"
+        let cleanTitle = session.title
+            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: " ", with: "_")
+            .replacingOccurrences(of: "/", with: "-")
+        savePanel.nameFieldStringValue = "\(cleanTitle).txt"
+        savePanel.canCreateDirectories = true
+        if #available(macOS 11.0, *) {
+            savePanel.allowedContentTypes = [.plainText]
+        } else {
+            savePanel.allowedFileTypes = ["txt"]
+        }
+
+        let content = formattedSessionText(for: session)
+        let handler: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .OK, let url = savePanel.url else { return }
+            do {
+                try content.write(to: url, atomically: true, encoding: .utf8)
+                let alert = NSAlert()
+                alert.messageText = "导出成功"
+                alert.informativeText = "会话已成功导出至：\n\(url.path)"
+                alert.addButton(withTitle: "确定")
+                alert.addButton(withTitle: "在访达中显示")
+                let choice = alert.runModal()
+                if choice == .alertSecondButtonReturn {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "导出失败"
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
+        }
+
+        if let window = view.window {
+            savePanel.beginSheetModal(for: window, completionHandler: handler)
+        } else {
+            handler(savePanel.runModal())
+        }
     }
 
     @objc private func createSession() {
@@ -1625,6 +1750,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sessionController: SessionManagerWindowController?
     private var statusItem: NSStatusItem?
     private var captureToggleItem: NSMenuItem?
+    private var autoHideMenuItem: NSMenuItem?
+    private var lastCapturingState: Bool? = nil
+
+    private var autoHideWhenIdle: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "overlay.voice.autoHideWhenIdle") == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: "overlay.voice.autoHideWhenIdle")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "overlay.voice.autoHideWhenIdle")
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let panel = FloatingPanel(
@@ -1656,6 +1795,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         answerMonitor.onToggleVisibility = { [weak self] in
             self?.panel?.toggleVisibility()
+        }
+        if answerMonitor.isVoiceMode {
+            answerMonitor.ensureVoiceCaptureStarted()
         }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         let symbolName = answerMonitor.isVoiceMode ? "mic.fill" : "camera.viewfinder"
@@ -1726,6 +1868,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             centerItem.target = self
             menu.addItem(centerItem)
+            let autoHideItem = NSMenuItem(
+                title: "无采集时自动隐藏悬浮窗",
+                action: #selector(toggleAutoHideWhenIdle),
+                keyEquivalent: ""
+            )
+            autoHideItem.target = self
+            autoHideItem.state = autoHideWhenIdle ? .on : .off
+            autoHideMenuItem = autoHideItem
+            menu.addItem(autoHideItem)
         } else {
             let captureItem = NSMenuItem(
                 title: "截图并分析",
@@ -1759,8 +1910,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.menu = menu
         statusItem = item
         answerMonitor.start()
-        panel.orderFrontRegardless()
-        if !answerMonitor.isVoiceMode {
+        if answerMonitor.isVoiceMode {
+            if !autoHideWhenIdle || answerMonitor.isVoiceCapturing {
+                panel.orderFrontRegardless()
+            }
+        } else {
+            panel.orderFrontRegardless()
             DispatchQueue.main.async { [weak self] in
                 self?.showSettings()
             }
@@ -1785,8 +1940,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         sessionController?.showWindow(nil)
     }
-    @objc private func toggleVoiceCapture() { answerMonitor.toggleVoiceCapture() }
-    @objc private func submitVoiceQuestion() { answerMonitor.submitVoiceQuestion() }
+    @objc private func toggleVoiceCapture() {
+        let willStart = captureToggleItem?.title == "开始采集"
+        answerMonitor.toggleVoiceCapture()
+        if autoHideWhenIdle && willStart {
+            panel?.orderFrontRegardless()
+        }
+    }
+    @objc private func submitVoiceQuestion() {
+        panel?.orderFrontRegardless()
+        answerMonitor.submitVoiceQuestion()
+    }
+    @objc private func toggleAutoHideWhenIdle() {
+        autoHideWhenIdle.toggle()
+        autoHideMenuItem?.state = autoHideWhenIdle ? .on : .off
+        if autoHideWhenIdle {
+            if !answerMonitor.isVoiceCapturing {
+                panel?.orderOut(nil)
+            } else {
+                panel?.orderFrontRegardless()
+            }
+        } else {
+            panel?.orderFrontRegardless()
+        }
+    }
     @objc private func quitVoiceMode() { answerMonitor.quitVoiceMode() }
     @objc private func togglePanel() { panel?.toggleVisibility() }
     @objc private func centerPanel() { panel?.centerNearTop() }
@@ -1812,6 +1989,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         icon?.isTemplate = true
         statusItem?.button?.image = icon
         statusItem?.button?.toolTip = snapshot.status
+
+        if autoHideWhenIdle {
+            if lastCapturingState != snapshot.isCapturing {
+                lastCapturingState = snapshot.isCapturing
+                if snapshot.isCapturing {
+                    panel?.orderFrontRegardless()
+                } else {
+                    panel?.orderOut(nil)
+                }
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

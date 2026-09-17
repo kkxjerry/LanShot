@@ -82,6 +82,8 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn('title: "退出 LanShot"', source)
         self.assertIn('title: "会话管理..."', source)
         self.assertIn('title: "继续所选会话"', source)
+        self.assertIn('title: "导出 TXT"', source)
+        self.assertIn('exportSelectedSession', source)
         self.assertIn('title: "截屏模式"', source)
         self.assertIn('title: "面试模式"', source)
         self.assertIn("SessionManagerWindowController", source)
@@ -292,9 +294,13 @@ class LanShot2Tests(unittest.TestCase):
             ),
             "为什么要用 DAG，而不是只让模型自己规划？",
         )
-        self.assertIn(
+        self.assertNotIn(
             "ReAct Plan Team 模式选择",
             service.retrieval_query("什么任务适合单 Agent，什么任务适合多 Agent？", ""),
+        )
+        self.assertIn(
+            "ReAct Plan Team 模式选择",
+            service.retrieval_query("CODA 中什么任务适合单 Agent、多 Agent？", ""),
         )
         self.assertIn(
             "Memory Context",
@@ -548,6 +554,31 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn("com.lanshot.unified.voice-capture", plist)
         self.assertIn("LanShot Voice Capture", plist)
         self.assertNotIn("NSSpeechRecognitionUsageDescription", plist)
+
+    def test_throttled_writer_coalesces_and_flushes(self):
+        service = load_audio_service()
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "answer.txt"
+            writer = service.ThrottledWriter(target, min_interval=0.08)
+            # First write executes immediately
+            writer.write("chunk 1")
+            self.assertEqual(target.read_text(encoding="utf-8").strip(), "chunk 1")
+            # Rapid second write within 80ms is buffered, not written to disk yet
+            writer.write("chunk 1 + 2")
+            self.assertEqual(target.read_text(encoding="utf-8").strip(), "chunk 1")
+            # Flush guarantees final buffered content is on disk
+            writer.flush()
+            self.assertEqual(target.read_text(encoding="utf-8").strip(), "chunk 1 + 2")
+
+    def test_get_voice_prompt_caches_content(self):
+        service = load_audio_service()
+        with tempfile.TemporaryDirectory() as directory:
+            prompt_file = Path(directory) / "test_prompt.txt"
+            prompt_file.write_text("prompt content v1", encoding="utf-8")
+            self.assertEqual(service.get_voice_prompt(prompt_file), "prompt content v1")
+            # Should read from cache when mtime matches
+            service._PROMPT_CACHE[str(prompt_file)] = (prompt_file.stat().st_mtime, "cached override")
+            self.assertEqual(service.get_voice_prompt(prompt_file), "cached override")
 
 
 if __name__ == "__main__":

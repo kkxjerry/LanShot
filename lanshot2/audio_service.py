@@ -825,12 +825,45 @@ def archive_capture(output: Path, question: str, answer: str) -> Path:
     return history
 
 
+def save_unsubmitted_transcript_to_history(
+    output: Path,
+    default_answer: str = "（本轮录音已停止，未提交模型，录音转写已完整存盘）",
+) -> bool:
+    system_text = read_text(output / "interviewer.txt")
+    microphone_text = read_text(output / "me.txt")
+    if not system_text and not microphone_text:
+        return False
+    session_id = read_text(output / "capture_session_id.txt")
+    conversation_id = ensure_conversation_session(output)
+
+    history_file = output.parent / "conversation_history.jsonl"
+    if history_file.is_file() and session_id:
+        try:
+            with history_file.open("r", encoding="utf-8") as stream:
+                for line in stream:
+                    if f'"capture_session_id": "{session_id}"' in line:
+                        return False
+        except OSError:
+            pass
+
+    question = combined_transcript(system_text, microphone_text)
+    append_question_history(
+        output,
+        question,
+        default_answer,
+        capture_session_id=session_id,
+        conversation_id=conversation_id,
+    )
+    return True
+
+
 def archive_pending_capture(output: Path) -> None:
     session_id = read_text(output / "capture_session_id.txt")
     if not session_id or session_id == read_text(output / "last_archived_session_id.txt"):
         return
     if not any((output / name).is_file() for name in ("interviewer.wav", "me.wav")):
         return
+    save_unsubmitted_transcript_to_history(output)
     archive_capture(
         output,
         combined_transcript(
@@ -1094,6 +1127,7 @@ def stop(output: Path) -> int:
         print("停止超时", file=sys.stderr)
         return 1
     if was_running:
+        save_unsubmitted_transcript_to_history(output)
         archive_capture(
             output,
             combined_transcript(
@@ -1113,6 +1147,7 @@ def capture_stop(output: Path) -> int:
         print("停止采集超时", file=sys.stderr)
         return 1
     if was_running:
+        save_unsubmitted_transcript_to_history(output)
         message = "本轮采集已停止并保存，按 F22 可以发送问题。"
         archive_capture(
             output,
@@ -1172,6 +1207,7 @@ def shutdown_from_overlay(output: Path) -> bool:
     was_running = process_id(output) is not None
     audio_stopped = stop_capture(output)
     if audio_stopped and was_running:
+        save_unsubmitted_transcript_to_history(output)
         archive_capture(
             output,
             combined_transcript(

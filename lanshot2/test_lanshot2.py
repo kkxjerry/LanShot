@@ -580,6 +580,41 @@ class LanShot2Tests(unittest.TestCase):
             service._PROMPT_CACHE[str(prompt_file)] = (prompt_file.stat().st_mtime, "cached override")
             self.assertEqual(service.get_voice_prompt(prompt_file), "cached override")
 
+    def test_unsubmitted_transcript_saved_to_history(self):
+        service = load_audio_service()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "audio"
+            output.mkdir(parents=True, exist_ok=True)
+            (output.parent / "current_session.json").write_text(json.dumps({"id": "conv-1"}), encoding="utf-8")
+            (output / "capture_session_id.txt").write_text("session-unsub-1", encoding="utf-8")
+            (output / "current_conversation_id.txt").write_text("conv-1", encoding="utf-8")
+            (output / "interviewer.txt").write_text("面试官最后的反问和再见", encoding="utf-8")
+            (output / "me.txt").write_text("好的谢谢面试官", encoding="utf-8")
+
+            # First save should succeed and append to history
+            saved = service.save_unsubmitted_transcript_to_history(output)
+            self.assertTrue(saved)
+            history = service.load_question_history(output, limit=10, conversation_id="conv-1")
+            self.assertEqual(len(history), 1)
+            self.assertIn("面试官最后的反问和再见", history[0]["input"])
+            self.assertIn("未提交模型", history[0]["answer"])
+
+            # Second call with same capture_session_id should deduplicate (not double-add)
+            saved_again = service.save_unsubmitted_transcript_to_history(output)
+            self.assertFalse(saved_again)
+            history = service.load_question_history(output, limit=10, conversation_id="conv-1")
+            self.assertEqual(len(history), 1)
+
+            # Empty text should not be saved
+            (output / "capture_session_id.txt").write_text("session-empty", encoding="utf-8")
+            (output / "interviewer.txt").write_text("", encoding="utf-8")
+            (output / "me.txt").write_text("", encoding="utf-8")
+            saved_empty = service.save_unsubmitted_transcript_to_history(output)
+            self.assertFalse(saved_empty)
+            history = service.load_question_history(output, limit=10, conversation_id="conv-1")
+            self.assertEqual(len(history), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""
+aim - Google AI Mode (AIM) 极速命令行客户端
+用法:
+  ./aim "你的技术问题"
+  ./aim --no-stream "你的技术问题"
+"""
+
+import sys
+import json
+import time
+import urllib.request
+import urllib.error
+import subprocess
+from pathlib import Path
+
+HOST = "127.0.0.1"
+PORT = 18888
+BASE_URL = f"http://{HOST}:{PORT}"
+
+def check_daemon_running() -> bool:
+    try:
+        req = urllib.request.Request(f"{BASE_URL}/health", headers={"User-Agent": "aim-cli"})
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data.get("warm", False)
+    except Exception:
+        return False
+
+def main():
+    if len(sys.argv) < 2:
+        print("用法: ./aim \"你的技术问题\"")
+        print("示例: ./aim \"什么是大模型 KV Cache 显存占用计算公式？\"")
+        sys.exit(1)
+        
+    question = sys.argv[1]
+    if question == "--no-stream" and len(sys.argv) > 2:
+        stream = False
+        question = sys.argv[2]
+    else:
+        stream = True
+        
+    # 1. 检查热通道守护进程
+    if not check_daemon_running():
+        print(f"\033[33m[AIM Client] 提示：极速热通道服务未启动或正在预热中。\033[0m")
+        print(f"\033[33m[AIM Client] 正在尝试自动拉起后台热进程...\033[0m")
+        script_dir = Path(__file__).resolve().parent
+        start_script = script_dir / "start_aim_daemon.sh"
+        if start_script.exists():
+            subprocess.run(["bash", str(start_script)], check=False)
+            time.sleep(2)
+        if not check_daemon_running():
+            print("\033[31m[AIM Client] 错误: 无法连接到热通道服务 (http://127.0.0.1:18888)\033[0m")
+            print("请先手动运行: bash ./start_aim_daemon.sh")
+            sys.exit(1)
+            
+    # 2. 发起极速提问
+    print(f"\033[36m[AIM Client] ⚡️ 正在向 Google AI Mode 发送提问: \"{question}\" ...\033[0m\n")
+    start_time = time.monotonic()
+    
+    payload = json.dumps({"question": question, "stream": stream}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{BASE_URL}/ask",
+        data=payload,
+        headers={"Content-Type": "application/json", "User-Agent": "aim-cli"},
+        method="POST"
+    )
+    
+    first_token_time = None
+    accumulated_text = ""
+    
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            if stream:
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if line.startswith("data:"):
+                        data_str = line[5:].strip()
+                        if not data_str:
+                            continue
+                        try:
+                            event = json.loads(data_str)
+                            ev_type = event.get("type")
+                            if ev_type == "ttft":
+                                if first_token_time is None:
+                                    first_token_time = event.get("ms")
+                            elif ev_type == "chunk":
+                                if first_token_time is None:
+                                    first_token_time = int((time.monotonic() - start_time) * 1000)
+                                chunk_text = event.get("text", "")
+                                sys.stdout.write(chunk_text)
+                                sys.stdout.flush()
+                                accumulated_text = event.get("full", accumulated_text + chunk_text)
+                            elif ev_type == "done":
+                                total_ms = event.get("total_ms", int((time.monotonic() - start_time) * 1000))
+                                ttft_ms = event.get("ttft_ms", first_token_time or total_ms)
+                                print("\n\n" + "=" * 50)
+                                print(f"\033[32m🚀 Google AI Mode 极速生成完毕！\033[0m")
+                                print(f"⏱️ 首字上屏延迟 (TTFT): \033[1;32m{ttft_ms} ms (约 {ttft_ms/1000:.2f}s)\033[0m")
+                                print(f"⏱️ 全文总耗时: \033[1;36m{total_ms} ms (约 {total_ms/1000:.2f}s)\033[0m")
+                                print("=" * 50)
+                                break
+                            elif ev_type == "error":
+                                print(f"\n\033[31m[AIM Client] 错误: {event.get('message')}\033[0m")
+                                break
+                        except Exception:
+                            pass
+            else:
+                data = json.loads(resp.read().decode("utf-8"))
+                total_ms = data.get("total_ms", int((time.monotonic() - start_time) * 1000))
+                ttft_ms = data.get("ttft_ms", total_ms)
+                print(data.get("answer", ""))
+                print("\n" + "=" * 50)
+                print(f"\033[32m🚀 Google AI Mode 极速生成完毕！\033[0m")
+                print(f"⏱️ 首字上屏延迟 (TTFT): \033[1;32m{ttft_ms} ms (约 {ttft_ms/1000:.2f}s)\033[0m")
+                print(f"⏱️ 全文总耗时: \033[1;36m{total_ms} ms (约 {total_ms/1000:.2f}s)\033[0m")
+                print("=" * 50)
+    except urllib.error.URLError as e:
+        print(f"\033[31m[AIM Client] 网络请求失败: {e}\033[0m")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

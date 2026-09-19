@@ -507,7 +507,98 @@ class FallbackQuestionClient:
             return answer
 
 
-QuestionClient = VoiceQuestionClient | GeminiQuestionClient | FallbackQuestionClient
+class GoogleAimQuestionClient:
+    """Client that queries the local Google AI Mode Warm Session Daemon (1.4s TTFT)."""
+
+    def __init__(
+        self,
+        base_url: str = "http://127.0.0.1:18888",
+        *,
+        timeout: float = 25.0,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.model = "google-ai-mode-warm"
+        self.last_timing: dict = {}
+        self.last_usage: dict = {}
+
+    def ask(self, question: str, prompt: str = "", history: list[dict] | None = None) -> str:
+        return self.ask_stream(question, prompt, history=history)
+
+    def ask_stream(
+        self,
+        question: str,
+        prompt: str = "",
+        history: list[dict] | None = None,
+        *,
+        on_update=None,
+    ) -> str:
+        query = question
+        if "系统声音识别：" in question:
+            lines = [
+                l.strip()
+                for l in question.splitlines()
+                if not l.startswith("系统声音识别：")
+                and not l.startswith("麦克风识别：")
+                and l.strip()
+                and l.strip() != "（未识别到内容）"
+            ]
+            if lines:
+                query = lines[0].strip()
+
+        started = time.monotonic()
+        payload = json.dumps({"question": query, "stream": True}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.base_url}/ask",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        answer = ""
+        ttft_ms = None
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if not data_str:
+                        continue
+                    try:
+                        ev = json.loads(data_str)
+                        if ev.get("type") == "chunk":
+                            chunk = ev.get("text", "")
+                            answer = ev.get("full", answer + chunk)
+                            if ttft_ms is None:
+                                ttft_ms = round((time.monotonic() - started) * 1000)
+                            if on_update:
+                                on_update(answer)
+                        elif ev.get("type") == "done":
+                            answer = ev.get("answer", answer)
+                            ttft_ms = ev.get("ttft_ms", ttft_ms)
+                            if on_update:
+                                on_update(answer)
+                    except Exception:
+                        pass
+            total_ms = round((time.monotonic() - started) * 1000)
+            self.last_timing = {
+                "provider": "google_ai_mode_warm",
+                "streaming": True,
+                "first_chunk_ms": ttft_ms or total_ms,
+                "complete_ms": total_ms,
+            }
+            return answer
+        except Exception as e:
+            raise RuntimeError(f"Google AI Mode Warm daemon request failed: {e}") from e
+
+
+QuestionClient = (
+    VoiceQuestionClient
+    | GeminiQuestionClient
+    | FallbackQuestionClient
+    | GoogleAimQuestionClient
+)
 
 
 def default_question_client() -> QuestionClient:

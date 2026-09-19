@@ -253,12 +253,16 @@ class LanShot2Tests(unittest.TestCase):
 
     def test_voice_prompt_requires_short_spoken_answer(self):
         prompt = (ROOT / "voice_question_prompt.txt").read_text(encoding="utf-8")
-        self.assertIn("面试现场可以直接说出口", prompt)
-        self.assertIn("八十到一百八十个汉字", prompt)
-        self.assertIn("不要说“根据知识库”", prompt)
-        self.assertIn("私有资料未命中时不得整题拒答", prompt)
-        self.assertIn("严禁编造替代数字", prompt)
-        self.assertIn("个人事实无依据时不得使用", prompt)
+        self.assertIn("可以用自己的话说出来的中文回答", prompt)
+        self.assertIn("第一段用一到两句话直接给出核心答案", prompt)
+        self.assertIn("不使用 Markdown 标题、加粗", prompt)
+        self.assertIn("没有依据时不能补出候选人的经历", prompt)
+
+    def test_google_aim_question_client_instantiation_and_query_extraction(self):
+        service = load_audio_service()
+        client = service.GoogleAimQuestionClient("http://127.0.0.1:18888")
+        self.assertEqual(client.model, "google-ai-mode-warm")
+        self.assertEqual(client.base_url, "http://127.0.0.1:18888")
 
     def test_retrieval_query_prefers_interviewer_and_removes_question_preamble(self):
         service = load_audio_service()

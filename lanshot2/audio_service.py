@@ -19,20 +19,27 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
+from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(ROOT))
 
-from lanshot_common.interview_rag import route_question, filter_knowledge, generation_prompt  # noqa: E402
+from lanshot_common.interview_rag import broad_retrieval_query, route_question, filter_knowledge, generation_prompt  # noqa: E402
 from lanshot_common.knowledge import (  # noqa: E402
     KnowledgeSearchResult,
     KnowledgeService,
     ground_text,
 )
-
-
-ROOT = Path(__file__).resolve().parent
+from reverse_questions import (  # noqa: E402
+    REVERSE_QUESTION_SYSTEM_PROMPT,
+    ReverseQuestion,
+    format_reverse_questions_display,
+    heuristic_reverse_questions,
+    parse_reverse_questions_from_response,
+)
 APP = ROOT / "LanShot Voice Capture.app"
 OVERLAY_APP = ROOT.parent / "capture-exclusion-demo/build/CaptureExclusionDemo.app"
 OVERLAY_EXECUTABLE = OVERLAY_APP / "Contents/MacOS/CaptureExclusionDemo"
@@ -55,9 +62,12 @@ class QuestionSnapshot:
     archive_directory: Path
     system_text: str
     microphone_text: str
+    timeline_text: str = ""
 
     @property
     def question(self) -> str:
+        if self.timeline_text:
+            return self.timeline_text
         return combined_transcript(self.system_text, self.microphone_text)
 
 
@@ -399,11 +409,17 @@ class VoiceQuestionClient:
         opener=urllib.request.urlopen,
         url: str = BAILIAN_URL,
         model: str = VOICE_MODEL,
+        enable_thinking: bool = True,
+        reasoning_effort: str = "low",
     ) -> None:
+        if reasoning_effort not in ("low", "high", "max"):
+            raise ValueError("unsupported Bailian reasoning effort")
         self.api_key = api_key
         self.opener = opener
         self.url = url
         self.model = model
+        self.enable_thinking = bool(enable_thinking)
+        self.reasoning_effort = reasoning_effort
         self.last_timing: dict = {}
 
     def ask(self, question: str, prompt: str, history: list[dict] | None = None) -> str:
@@ -416,8 +432,8 @@ class VoiceQuestionClient:
         payload = {
             "model": self.model,
             "messages": messages,
-            "enable_thinking": True,
-            "reasoning_effort": "low",
+            "enable_thinking": self.enable_thinking,
+            "reasoning_effort": self.reasoning_effort,
             "stream": False,
             "max_tokens": 1600,
         }
@@ -449,7 +465,8 @@ class VoiceQuestionClient:
         self.last_timing = {
             "provider": "bailian_glm",
             "streaming": False,
-            "thinking_level": "low",
+            "thinking": self.enable_thinking,
+            "thinking_level": self.reasoning_effort if self.enable_thinking else "none",
             "complete_ms": round((time.monotonic() - started) * 1000),
         }
         return answer.strip().replace("```python", "").replace("```", "").strip()
@@ -614,6 +631,48 @@ def combined_transcript(system_text: str, microphone_text: str) -> str:
     )
 
 
+def load_timeline_events(timeline_path: Path) -> list[dict]:
+    """Loads and sorts timeline events from timeline.jsonl."""
+    if not timeline_path.is_file():
+        return []
+    events = []
+    try:
+        with timeline_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    if isinstance(data, dict) and "text" in data and data["text"].strip():
+                        events.append(data)
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
+    events.sort(key=lambda x: x.get("t", 0.0))
+    return events
+
+
+def format_timeline_dialogue(timeline_path: Path) -> str:
+    """Formats timeline.jsonl into chronological, interleaved dialogue turns."""
+    events = load_timeline_events(timeline_path)
+    if not events:
+        return ""
+    lines = []
+    for ev in events:
+        role = ev.get("role", "interviewer")
+        text = ev.get("text", "").strip()
+        t = ev.get("t")
+        prefix = "【面试官】" if role == "interviewer" else "【我】"
+        if t:
+            time_str = time.strftime("%H:%M:%S", time.localtime(t))
+            lines.append(f"{prefix} ({time_str}): {text}")
+        else:
+            lines.append(f"{prefix}: {text}")
+    return "\n".join(lines)
+
+
 def retrieval_query(
     system_text: str,
     microphone_text: str,
@@ -693,7 +752,8 @@ def prepare_question_snapshot(output: Path) -> QuestionSnapshot:
     session_id = read_text(output / "capture_session_id.txt")
     system_text = read_text(output / "interviewer.txt")
     microphone_text = read_text(output / "me.txt")
-    question = combined_transcript(system_text, microphone_text)
+    timeline_text = format_timeline_dialogue(output / "timeline.jsonl")
+    question = timeline_text if timeline_text else combined_transcript(system_text, microphone_text)
     archive_directory = archive_capture(output, question, "正在生成答案...")
     return QuestionSnapshot(
         session_id=session_id,
@@ -702,6 +762,7 @@ def prepare_question_snapshot(output: Path) -> QuestionSnapshot:
         archive_directory=archive_directory,
         system_text=system_text,
         microphone_text=microphone_text,
+        timeline_text=timeline_text,
     )
 
 
@@ -771,11 +832,15 @@ def submit_snapshot(
         snapshot.system_text, snapshot.microphone_text,
         previous_question=previous_question,
     )
-    search_query = route.query
+    search_query = broad_retrieval_query(route)
     knowledge = KnowledgeSearchResult.disabled(search_query)
     if knowledge_service is not None and route.use_knowledge:
         try:
-            knowledge = knowledge_service.search(search_query)
+            candidate_search = getattr(knowledge_service, "search_candidates", None)
+            if callable(candidate_search):
+                knowledge = candidate_search(search_query)
+            else:
+                knowledge = knowledge_service.search(search_query)
         except Exception:
             knowledge = KnowledgeSearchResult.failed(search_query, "retrieval_exception")
     knowledge, selection = filter_knowledge(knowledge, route)
@@ -807,7 +872,7 @@ def submit_snapshot(
     try:
         prompt = generation_prompt(get_voice_prompt(), route)
         active_client = client or default_question_client()
-        grounded_question = ground_text(route.generation_input(), knowledge)
+        grounded_question = ground_text(route.generation_input(), knowledge, coverage=selection)
         # Generated answers are not verified history. Only the previous original
         # interviewer turn is carried in route.generation_input() for follow-ups.
         history = []
@@ -908,7 +973,7 @@ def archive_capture(output: Path, question: str, answer: str) -> Path:
     history.mkdir(parents=True, exist_ok=True)
     atomic_text(history / f"{identifier}-question.txt", f"{question}\n")
     atomic_text(history / f"{identifier}-answer.txt", f"{answer}\n")
-    for name in ("interviewer.wav", "me.wav", "interviewer.txt", "me.txt"):
+    for name in ("interviewer.wav", "me.wav", "interviewer.txt", "me.txt", "timeline.jsonl"):
         source = output / name
         if source.is_file():
             shutil.copy2(source, history / f"{identifier}-{name}")
@@ -922,7 +987,8 @@ def save_unsubmitted_transcript_to_history(
 ) -> bool:
     system_text = read_text(output / "interviewer.txt")
     microphone_text = read_text(output / "me.txt")
-    if not system_text and not microphone_text:
+    timeline_text = format_timeline_dialogue(output / "timeline.jsonl")
+    if not system_text and not microphone_text and not timeline_text:
         return False
     session_id = read_text(output / "capture_session_id.txt")
     conversation_id = ensure_conversation_session(output)
@@ -937,7 +1003,7 @@ def save_unsubmitted_transcript_to_history(
         except OSError:
             pass
 
-    question = combined_transcript(system_text, microphone_text)
+    question = timeline_text if timeline_text else combined_transcript(system_text, microphone_text)
     append_question_history(
         output,
         question,
@@ -1335,6 +1401,63 @@ def spawn_mode_switch(output: Path, mode: str) -> None:
         )
 
 
+def generate_and_save_reverse_questions(
+    output: Path,
+    client: QuestionClient | None = None,
+) -> list[dict[str, Any]]:
+    dialogue = format_timeline_dialogue(output / "timeline.jsonl")
+    if not dialogue:
+        system_text = read_text(output / "interviewer.txt")
+        microphone_text = read_text(output / "me.txt")
+        dialogue = combined_transcript(system_text, microphone_text)
+
+    atomic_text(output / "question.txt", "💡 正在根据整场面试记录提取高质量反问建议...\n")
+    atomic_text(output / "answer.txt", "正在提炼反问候选池（按优先级排序）...\n")
+
+    questions: list[dict[str, Any]] = []
+    if client is not None and dialogue.strip():
+        try:
+            prompt = f"{REVERSE_QUESTION_SYSTEM_PROMPT}\n\n【面试真实对话记录】：\n{dialogue}"
+            response = client.ask(prompt)
+            questions = parse_reverse_questions_from_response(response)
+        except Exception as e:
+            print(f"反问大模型提取失败，回退到规则提取: {e}", file=sys.stderr)
+
+    if not questions:
+        heuristic_list = heuristic_reverse_questions(dialogue)
+        questions = [q.to_dict() for q in heuristic_list]
+
+    serialized = json.dumps(questions, ensure_ascii=False, indent=2) + "\n"
+    atomic_text(output / "reverse_questions.json", serialized)
+
+    display_text = format_reverse_questions_display(questions)
+    atomic_text(output / "reverse_questions.txt", display_text + "\n")
+    atomic_text(output / "answer.txt", display_text + "\n")
+    atomic_text(
+        output / "question_status.json",
+        json.dumps(
+            {"status": "completed", "type": "reverse_questions", "at": time.time()},
+            ensure_ascii=False,
+        )
+        + "\n",
+    )
+
+    configured_id = read_text(output / "capture_session_id.txt")
+    identifier = capture_identifier(configured_id)
+    history = output.parent / "questions" / time.strftime("%Y-%m-%d")
+    history.mkdir(parents=True, exist_ok=True)
+    atomic_text(history / f"{identifier}-reverse-questions.json", serialized)
+    atomic_text(history / f"{identifier}-reverse-questions.txt", display_text + "\n")
+
+    return questions
+
+
+def reverse_questions_command(output: Path) -> int:
+    generate_and_save_reverse_questions(output, client=default_question_client())
+    print(f"反问建议已生成并保存到 {output / 'reverse_questions.txt'}")
+    return 0
+
+
 def control_loop(output: Path) -> int:
     output.mkdir(parents=True, exist_ok=True)
     pid_url = output / "voice_control.pid"
@@ -1461,6 +1584,8 @@ def control_loop(output: Path) -> int:
                         activate_conversation_session(output, parts[1])
                 elif action == "switch-screenshot":
                     spawn_mode_switch(output, "screenshot")
+                elif action == "reverse-questions":
+                    generate_and_save_reverse_questions(output, client=default_question_client())
                 elif action == "shutdown":
                     shutdown_from_overlay(output)
                     break
@@ -1511,6 +1636,7 @@ def main() -> int:
         "stop",
         "status",
         "control-loop",
+        "reverse-questions",
     )
     parser.add_argument("command", choices=commands)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
@@ -1523,6 +1649,7 @@ def main() -> int:
         "stop": stop,
         "status": status,
         "control-loop": control_loop,
+        "reverse-questions": reverse_questions_command,
     }[args.command](
         args.output.expanduser().resolve()
     )

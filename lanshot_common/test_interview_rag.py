@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from lanshot_common.interview_rag import route_question, filter_knowledge, clean_turn, generation_prompt, coda_source_names
+from lanshot_common.interview_rag import broad_retrieval_query, retrieval_groups, route_question, filter_knowledge, clean_turn, generation_prompt, coda_source_names
 from lanshot_common.knowledge import KnowledgeHit, KnowledgeSearchResult
 from lanshot_common.bailian_stream import ask_stream
 
@@ -20,6 +20,36 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(route.project, "coda")
         self.assertTrue(route.use_knowledge)
         self.assertIn("ReAct Plan Team", route.query)
+
+    def test_personal_agent_question_is_anchored_to_coda(self):
+        route = route_question("你这个 Agent 的长短期记忆是怎么设计的？", "")
+        self.assertEqual(route.project, "coda")
+        self.assertTrue(route.use_knowledge)
+        self.assertIn("Memory Context", route.query)
+
+    def test_personal_tool_conflict_question_is_anchored_to_coda(self):
+        route = route_question(
+            "模型一次返回多个工具调用怎么处理？你们有没有互斥和文件版本检查？",
+            "",
+        )
+        self.assertEqual(route.project, "coda")
+        self.assertTrue(route.use_knowledge)
+
+    def test_project_specific_continuation_inherits_coda(self):
+        route = route_question(
+            "失败重试机制怎么设计？DAG子任务失败以后怎么办？",
+            "",
+            previous_question="你做的 CODA 里多个工具怎么处理？",
+        )
+        self.assertEqual(route.project, "coda")
+        self.assertTrue(route.previous)
+        self.assertTrue(route.use_knowledge)
+
+    def test_generic_agent_question_is_still_general(self):
+        route = route_question("Agent 的评测集应该怎么设计？", "")
+        self.assertEqual(route.kind, "general")
+        self.assertEqual(route.project, "")
+        self.assertFalse(route.use_knowledge)
 
     def test_same_question_reaches_retrieval_and_generation(self):
         route = route_question("第3题，CODA怎么做规划？失败后怎么办？", "不知道")
@@ -118,15 +148,113 @@ class RoutingTests(unittest.TestCase):
     def test_fact_budget_does_not_force_mechanism_question_short(self):
         fact = generation_prompt("基础提示", route_question("98.09%是答案准确率吗？", ""))
         deep = generation_prompt("基础提示", route_question("CODA怎么恢复？是不是所有失败都能重跑？", ""))
-        self.assertIn("80至180", fact)
-        self.assertIn("覆盖所有子问题", deep)
-        self.assertNotIn("80至180", deep)
+        self.assertIn("硬上限180", fact)
+        self.assertIn("每个子问题用1到2句回答", deep)
+        self.assertNotIn("硬上限180", deep)
 
     def test_filter_does_not_rewrite_numeric_facts(self):
         text = "Hit@10=98.09%，不是答案准确率。"
         result = KnowledgeSearchResult("hit", "RAG", hits=(KnowledgeHit(text, .9, "EnterpriseRAG.md"),))
         filtered, _ = filter_knowledge(result, route_question("RAG项目指标是什么？", ""))
         self.assertEqual(filtered.hits[0].text, text)
+
+    def test_enterprise_multi_question_builds_coverage_groups_and_broad_query(self):
+        route = route_question(
+            "EnterpriseRAG端到端流程是什么？切块多大？几路检索？为什么用Qwen3？98.09%是什么？Matryoshka是什么？",
+            "",
+        )
+        names = [group.name for group in retrieval_groups(route)]
+        self.assertEqual(
+            names,
+            ["workflow", "chunking", "retrieval", "embedding", "metrics", "matryoshka"],
+        )
+        broad = broad_retrieval_query(route)
+        self.assertIn("1200", broad)
+        self.assertIn("All-Gold@10", broad)
+        self.assertIn("Matryoshka", broad)
+        self.assertIn("相互独立的事实主题", broad)
+
+    def test_coverage_merge_keeps_lower_ranked_direct_evidence(self):
+        route = route_question(
+            "EnterpriseRAG端到端流程是什么？切块多大？几路检索？为什么用Qwen3？98.09%是什么？Matryoshka是什么？",
+            "",
+        )
+        result = KnowledgeSearchResult("hit", broad_retrieval_query(route), hits=(
+            KnowledgeHit("项目主线 Document Evidence Prompt Answer", .95, "主线1.md"),
+            KnowledgeHit("项目主线 EvidenceBuilder Query-Spans Packing", .94, "主线2.md"),
+            KnowledgeHit("四路 Dense BM25 Keyword BM25 English BM25 Weighted RRF", .93, "检索.md"),
+            KnowledgeHit("Qwen3-Embedding-4B E5 2048 95.96 97.87", .92, "向量.md"),
+            KnowledgeHit("Hit@10 98.09 All-Gold@10 92.34 MRR 470", .91, "指标.md"),
+            KnowledgeHit("主基线使用1200字符，overlap 200，115406 chunks", .70, "切块.md"),
+            KnowledgeHit("Matryoshka MRL 支持维度截断", .69, "套娃.md"),
+        ))
+        filtered, audit = filter_knowledge(result, route)
+        sources = [hit.document_name for hit in filtered.hits]
+
+        self.assertIn("切块.md", sources)
+        self.assertIn("套娃.md", sources)
+        self.assertEqual(audit["covered_groups"], 6)
+        self.assertGreaterEqual(audit["accepted_hits"], 5)
+
+    def test_coverage_audit_does_not_count_generic_term_as_direct_evidence(self):
+        route = route_question("EnterpriseRAG切块多大？Matryoshka是什么？", "")
+        result = KnowledgeSearchResult("hit", broad_retrieval_query(route), hits=(
+            KnowledgeHit("这个 chunk 使用 embedding 表示。", .9, "泛化.md"),
+        ))
+        _, audit = filter_knowledge(result, route)
+        self.assertEqual(audit["covered_groups"], 0)
+        self.assertFalse(audit["group_assignments"]["chunking"]["covered"])
+        self.assertFalse(audit["group_assignments"]["matryoshka"]["covered"])
+
+    def test_coverage_does_not_treat_metadata_keywords_as_body_evidence(self):
+        route = route_question(
+            "CODA失败重试机制怎么设计？网络抖动怎么重试？重试几次后停止？",
+            "",
+        )
+        result = KnowledgeSearchResult("hit", broad_retrieval_query(route), hits=(
+            KnowledgeHit(
+                "【文档名】: retry\n【标题】: 概览\n【正文】: "
+                "project: PaiCLI\nmodule: LlmRetry\n"
+                "keywords: RetryingLlmClient max_attempts base_delay_seconds 0.25 0.5 jitter stagnation_window\n"
+                "status: confirmed\n"
+                "模型请求失败后会做有限重试，默认总共尝试3次。",
+                .99,
+                "retry-overview.md",
+            ),
+            KnowledgeHit(
+                "【文档名】: retry\n【标题】: 默认重试参数\n【正文】: "
+                "原材料的 max_attempts 为3，base_delay_seconds为0.25，"
+                "两次等待是0.25秒和0.5秒，当前没有随机jitter，并处理Retry-After。",
+                .80,
+                "retry-details.md",
+            ),
+            KnowledgeHit(
+                "AgentBudget 的 stagnation_window=3。第二次连续相同工具轮次先提醒，第三次仍重复则停止。",
+                .79,
+                "stagnation.md",
+            ),
+        ))
+        filtered, audit = filter_knowledge(result, route)
+        assignment = audit["group_assignments"]["transport_retry"]
+        self.assertEqual(assignment["source"], "retry-details.md")
+        self.assertIn("0.25", assignment["matched_terms"])
+        self.assertIn("jitter", assignment["matched_terms"])
+        self.assertIn("retry-details.md", [hit.document_name for hit in filtered.hits])
+
+    def test_coverage_metadata_only_chunk_does_not_cover_numeric_fact(self):
+        route = route_question("EnterpriseRAG切块多大？", "")
+        result = KnowledgeSearchResult("hit", broad_retrieval_query(route), hits=(
+            KnowledgeHit(
+                "【文档名】: chunking\n【标题】: 概览\n【正文】: "
+                "project: EnterpriseRAG\nmodule: Chunking\n"
+                "keywords: 1200 200 overlap 115406\nstatus: confirmed\n"
+                "项目使用固定切块策略。",
+                .95,
+                "chunking-overview.md",
+            ),
+        ))
+        _, audit = filter_knowledge(result, route)
+        self.assertFalse(audit["group_assignments"]["chunking"]["covered"])
 
     def test_filtered_empty_result_does_not_claim_hit(self):
         result = KnowledgeSearchResult("hit", "CODA", hits=(KnowledgeHit("B", .9, "EnterpriseRAG.md"),))
@@ -169,6 +297,19 @@ class StreamingTests(unittest.TestCase):
         payload = json.loads(client.opener.call_args.args[0].data)
         self.assertTrue(payload["stream"])
         self.assertEqual(payload["reasoning_effort"], "low")
+
+    def test_non_thinking_configuration_is_sent(self):
+        client = self.client([
+            {"choices": [{"delta": {"content": "直接答案"}, "finish_reason": "stop"}]}
+        ])
+        client.enable_thinking = False
+        client.reasoning_effort = "low"
+        answer = ask_stream(client, "问题", "提示")
+        self.assertEqual(answer, "直接答案")
+        payload = json.loads(client.opener.call_args.args[0].data)
+        self.assertFalse(payload["enable_thinking"])
+        self.assertEqual(payload["reasoning_effort"], "low")
+        self.assertEqual(client.last_timing["thinking_level"], "none")
 
     def test_truncated_answer_is_not_success(self):
         client = self.client([{"choices": [{"delta": {"content": "半句话"}, "finish_reason": "length"}]}])

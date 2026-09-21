@@ -18,9 +18,11 @@ def ask_stream(client, question: str, prompt: str, history=None, *, on_update=No
             {"role": "assistant", "content": item["answer"]},
         ])
     messages.append({"role": "user", "content": question})
+    enable_thinking = bool(getattr(client, "enable_thinking", True))
+    reasoning_effort = str(getattr(client, "reasoning_effort", "low"))
     payload = {
         "model": client.model, "messages": messages,
-        "enable_thinking": True, "reasoning_effort": "low",
+        "enable_thinking": enable_thinking, "reasoning_effort": reasoning_effort,
         "stream": True, "stream_options": {"include_usage": True},
         "max_tokens": 2400,
     }
@@ -107,7 +109,9 @@ def ask_stream(client, question: str, prompt: str, history=None, *, on_update=No
         raise RuntimeError("百炼返回了无效的流式编码") from error
     answer = "".join(parts).strip()
     client.last_timing = {
-        "provider": "bailian_glm", "streaming": True, "thinking_level": "low",
+        "provider": "bailian_glm", "streaming": True,
+        "thinking": enable_thinking,
+        "thinking_level": reasoning_effort if enable_thinking else "none",
         "first_visible_ms": first_visible,
         "complete_ms": round((time.monotonic() - started) * 1000),
         "finish_reason": finish_reason, "event_count": event_count,

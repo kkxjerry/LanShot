@@ -1,0 +1,32 @@
+{
+  "rerank_top_n": 15,
+  "kb_search_configs": [
+    {
+      "credibility_level": "medium",
+      "rerank_min_score": 0.2,
+      "rerank_top_n": 15,
+      "dense_similarity_top_k": 50,
+      "enable_rewrite": true,
+      "weight": 1,
+      "rerank": {
+        "rerank_instruct": "",
+        "model_name": "qwen3-rerank-hybrid",
+        "rerank_mode": "qa"
+      },
+      "sparse_similarity_top_k": 50,
+      "name": "GODHANDS知识库",
+      "id": "9p67rrwlpk",
+      "desc": "面向候选人的技术面试知识库，保存真实简历、个人经历、项目资料和已准备问答，重点覆盖 PaiCLI、Enterprise RAG、等项目的架构、模块实现、代码逻辑、技术选型、实验过程、失败与优化、设计决策及结果。凡涉及“我做过什么、怎么实现、为什么这样设计、实验结果如何、遇到什么问题”等问题，优先依据本库回答；未记录的个人事实不得推测。"
+    }
+  ],
+  "kb_router_timeout_ms": 5000,
+  "hybrid_rerank": {
+    "rerank_instruct": "",
+    "model_name": "qwen3-rerank-hybrid",
+    "rerank_mode": "qa"
+  },
+  "agent_policy": "turbo",
+  "enable_kb_router": false,
+  "kb_router_model": "qwen-plus-latest",
+  "kb_router_prompt": "你是搜索意图分析专家。你的任务是分析用户的查询意图，结合用户自定义路由指令，从可用知识库列表中选择最相关的知识库。\n\n## 路由规则\n1. 综合分析用户 query 的主题领域、意图和对话上下文\n2. 将 query 意图与每个知识库的名称及描述进行匹配，选择最相关的知识库（可以选择多个）\n3. 如果 query 涉及数据库查询（如统计、数量、排名、聚合等），需要选择数据库类型的知识库\n4. 如果用户提供了自定义路由指令，必须作为路由决策的优先参考\n5. 如果没有任何知识库与 query 相关，返回空列表\n\n## 知识库列表\n{pipeline_info}\n\n## 自定义路由指令\n{intent_prompt}\n\n## 输入\n- query: 用户当前查询\n- pipeline_info: 可用知识库列表，包含 pipeline_id、pipeline_name、pipeline_description\n- intent_prompt: 用户自定义路由指令（可选）\n\n## 输出格式\n输出严格 JSON（不要包含 ```json 标记或其他额外内容）：\n{\n    \"selected_kbs\": [\"pipeline_id1\", \"pipeline_id2\"]\n}"
+}

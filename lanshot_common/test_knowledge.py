@@ -111,6 +111,26 @@ class KnowledgeTests(unittest.TestCase):
             {"agent_id": "aid-agent123", "query": "介绍项目", "images": []},
         )
 
+    def test_candidate_search_keeps_wider_provider_results(self):
+        response = {
+            "success": True,
+            "data": {
+                "nodes": [
+                    {"score": 0.9, "text": f"候选{i}", "metadata": {}}
+                    for i in range(5)
+                ]
+            },
+        }
+        opener = mock.Mock(return_value=FakeResponse(json.dumps(response).encode()))
+        client = KnowledgeClient(self.config(max_hits=2), "secret-key", opener=opener)
+
+        normal = client.search("问题")
+        wide = client.search_candidates("问题")
+
+        self.assertEqual(len(normal.hits), 2)
+        self.assertEqual(len(wide.hits), 5)
+        self.assertEqual(opener.call_count, 2)
+
     def test_empty_and_transport_failure_are_fail_open_results(self):
         empty = {"success": True, "data": {"nodes": [], "cost_time": 12}}
         empty_result = KnowledgeClient(
@@ -217,6 +237,22 @@ class KnowledgeTests(unittest.TestCase):
         ))
         self.assertEqual(grounded.count("BEGIN_UNTRUSTED_KNOWLEDGE"), 1)
         self.assertEqual(grounded.count("END_UNTRUSTED_KNOWLEDGE"), 1)
+
+    def test_grounding_marks_missing_coverage_groups_as_unverified(self):
+        from lanshot_common.knowledge import KnowledgeHit
+        grounded = ground_text(
+            "项目重试几次？",
+            KnowledgeSearchResult(
+                status="hit",
+                query="重试",
+                hits=(KnowledgeHit("Plan失败后可以replan。", .9, "Plan.md"),),
+            ),
+            coverage={"missing_groups": ["transport_retry", "stagnation"]},
+        )
+        self.assertIn("transport_retry", grounded)
+        self.assertIn("stagnation", grounded)
+        self.assertIn("不得补替代数字", grounded)
+        self.assertIn("不得在最终答案中暴露", grounded)
 
     def test_empty_retrieval_answers_general_questions_without_inventing_personal_facts(self):
         grounded = ground_text(

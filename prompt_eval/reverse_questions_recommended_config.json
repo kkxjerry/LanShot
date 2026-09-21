@@ -1,0 +1,41 @@
+{
+  "status": "evaluated_candidate_not_wired_into_app",
+  "date": "2026-09-20",
+  "task": "反问问题选择，不用于替换普通面试作答的默认配置",
+  "primary_candidate": {
+    "provider": "gemini_developer_api",
+    "model": "gemini-3.8-flash",
+    "generationConfig": {
+      "temperature": 0.2,
+      "maxOutputTokens": 12288,
+      "thinkingConfig": {"thinkingLevel": "HIGH"}
+    },
+    "prompt_file": "prompt_eval/reverse_question_prompt_v3.txt"
+  },
+  "comparison_candidate": {
+    "provider": "bailian",
+    "model": "deepseek-v4.1-flash",
+    "enable_thinking": true,
+    "reasoning_effort": "high",
+    "max_tokens": 16384,
+    "temperature": 0.2,
+    "prompt_file": "prompt_eval/reverse_question_prompt_v3.txt"
+  },
+  "tested_transport": {
+    "stream": true,
+    "socket_timeout_seconds": 150,
+    "stream_total_budget_seconds": 210,
+    "max_display_questions": 3,
+    "automatic_provider_fallback": false
+  },
+  "required_before_app_activation": [
+    "修复generate_and_save_reverse_questions中client.ask缺少prompt参数的调用",
+    "按当前conversation_id组装整场真实记录，排除模型生成答案，并纳入尚未提交的转写",
+    "确认timeline跨场次隔离和归档去重，不能把不同面试串起来",
+    "finish reason截断、空结果、JSON错误必须标记真实失败，不把规则兜底显示为模型生成成功",
+    "逐行引用校验与问题前提的语义归因分开检查，保留可能/条件/主体边界",
+    "展示只保留问题正文和简短主题；分数、证据、依据保留在调试记录",
+    "反问使用独立token预算和超时，不能直接沿用普通作答的4096输出预算与20秒连接设置"
+  ],
+  "limits": "小样本单次回放。v3 Gemini六份片段、DeepSeek三份片段；尚未证实每次选题排序最优或每条可直接照读。不得据本配置宣称应用已切换、端到端已通过。"
+}

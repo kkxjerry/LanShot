@@ -358,7 +358,11 @@ class LanShot2Tests(unittest.TestCase):
                 return "结合个人项目的答案"
 
         class StubKnowledge:
-            def search(self, query):
+            def __init__(self):
+                self.calls = 0
+
+            def search_candidates(self, query):
+                self.calls += 1
                 self.query = query
                 return KnowledgeSearchResult(
                     status="hit",
@@ -368,6 +372,9 @@ class LanShot2Tests(unittest.TestCase):
                     provider_ms=65,
                     request_id="request-test",
                 )
+
+            def search(self, query):
+                raise AssertionError("voice path should use exactly one wide candidate search")
 
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "audio"
@@ -388,6 +395,7 @@ class LanShot2Tests(unittest.TestCase):
                 )
             )
 
+            self.assertEqual(knowledge.calls, 1)
             self.assertEqual(knowledge.query, "请介绍项目难点")
             saved_question = (output / "question.txt").read_text(encoding="utf-8")
             self.assertNotIn("负责订单系统重构", saved_question)
@@ -618,7 +626,87 @@ class LanShot2Tests(unittest.TestCase):
             history = service.load_question_history(output, limit=10, conversation_id="conv-1")
             self.assertEqual(len(history), 1)
 
+    def test_timeline_dialogue_interleaving_and_archiving(self):
+        service = load_audio_service()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "output"
+            output.mkdir()
+            (output / "capture_session_id.txt").write_text("session-tl-1", encoding="utf-8")
+            (output / "current_conversation_id.txt").write_text("conv-tl-1", encoding="utf-8")
+            (output.parent / "current_session.json").write_text(json.dumps({"id": "conv-tl-1"}), encoding="utf-8")
+            (output / "interviewer.txt").write_text("面试官的问题", encoding="utf-8")
+            (output / "me.txt").write_text("我的回答", encoding="utf-8")
+
+            # Write out-of-order timeline events
+            timeline_lines = [
+                json.dumps({"t": 1002.0, "role": "me", "text": "我：主要用了多路检索融合。"}),
+                json.dumps({"t": 1001.0, "role": "interviewer", "text": "面试官：你这个 Agent 是怎么检索的？"}),
+                json.dumps({"t": 1003.0, "role": "interviewer", "text": "面试官：那 RRF 融合效果如何？"}),
+            ]
+            (output / "timeline.jsonl").write_text("\n".join(timeline_lines) + "\n", encoding="utf-8")
+
+            # Verify load_timeline_events sorts chronologically
+            events = service.load_timeline_events(output / "timeline.jsonl")
+            self.assertEqual(len(events), 3)
+            self.assertEqual(events[0]["role"], "interviewer")
+            self.assertEqual(events[1]["role"], "me")
+            self.assertEqual(events[2]["role"], "interviewer")
+
+            # Verify format_timeline_dialogue interleaves turns
+            dialogue = service.format_timeline_dialogue(output / "timeline.jsonl")
+            self.assertIn("【面试官】", dialogue)
+            self.assertIn("【我】", dialogue)
+            lines = dialogue.strip().splitlines()
+            self.assertEqual(len(lines), 3)
+            self.assertTrue(lines[0].startswith("【面试官】"))
+            self.assertTrue(lines[1].startswith("【我】"))
+            self.assertTrue(lines[2].startswith("【面试官】"))
+
+            # Verify prepare_question_snapshot uses timeline_text
+            snapshot = service.prepare_question_snapshot(output)
+            self.assertEqual(snapshot.question, dialogue)
+            self.assertEqual(snapshot.timeline_text, dialogue)
+
+            # Verify archive_capture copies timeline.jsonl
+            archived_timeline = snapshot.archive_directory / f"{snapshot.identifier}-timeline.jsonl"
+            self.assertTrue(archived_timeline.is_file())
+            self.assertEqual(archived_timeline.read_text(encoding="utf-8"), (output / "timeline.jsonl").read_text(encoding="utf-8"))
+
+    def test_native_audio_capture_has_timeline_and_punctuation(self):
+        source = (ROOT / "native_audio_capture.swift").read_text(encoding="utf-8")
+        self.assertIn('"semantic_punctuation_enabled": true', source)
+        self.assertIn('"max_sentence_silence": 800', source)
+        self.assertIn("TimelineWriter", source)
+        self.assertIn('appendingPathComponent("timeline.jsonl")', source)
+        self.assertIn("timelineWriter?.append", source)
+
+    def test_generate_and_save_reverse_questions(self):
+        service = load_audio_service()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "output"
+            output.mkdir()
+            (output / "capture_session_id.txt").write_text("session-rev-1", encoding="utf-8")
+            (output / "current_conversation_id.txt").write_text("conv-rev-1", encoding="utf-8")
+            (output.parent / "current_session.json").write_text(json.dumps({"id": "conv-rev-1"}), encoding="utf-8")
+
+            timeline_lines = [
+                json.dumps({"t": 1001.0, "role": "interviewer", "text": "你这个 Agent 为什么一定要做 DAG？"}),
+                json.dumps({"t": 1002.0, "role": "me", "text": "主要是为了状态管理。"}),
+                json.dumps({"t": 1003.0, "role": "interviewer", "text": "那 ReAct 不也可以吗？为什么还要显式 Plan？"}),
+                json.dumps({"t": 1004.0, "role": "me", "text": "因为长任务容易跑偏。"}),
+                json.dumps({"t": 1005.0, "role": "interviewer", "text": "那线上 Plan 失败了怎么重试？你们线上真的喜欢用 Plan 吗？"}),
+            ]
+            (output / "timeline.jsonl").write_text("\n".join(timeline_lines) + "\n", encoding="utf-8")
+
+            questions = service.generate_and_save_reverse_questions(output)
+            self.assertTrue(len(questions) >= 2)
+            self.assertEqual(questions[0]["priority"], "P0")
+            self.assertIn("反问候选池", (output / "reverse_questions.txt").read_text(encoding="utf-8"))
+            self.assertTrue((output / "reverse_questions.json").is_file())
+            self.assertIn("反问", (output / "answer.txt").read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

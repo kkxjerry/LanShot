@@ -253,6 +253,25 @@ final class LatestAnswerMonitor {
         )
     }
 
+    func triggerReverseQuestions() {
+        guard isVoiceMode else { return }
+        try? "💡 正在根据整场面试记录提取反问建议...\n".write(
+            to: displayDirectory.appendingPathComponent("question.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try? "正在提炼反问候选池（按优先级排序）...\n".write(
+            to: displayDirectory.appendingPathComponent("answer.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try? "reverse-questions \(UUID().uuidString.lowercased())\n".write(
+            to: displayDirectory.appendingPathComponent("voice_capture_command.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
     func quitVoiceMode() {
         guard isVoiceMode else { return }
         try? "quitting\n".write(
@@ -1837,6 +1856,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             sessionsItem.target = self
             menu.addItem(sessionsItem)
+
+            let reverseQuestionsItem = NSMenuItem(
+                title: "反问建议 (优先级排序)...",
+                action: #selector(triggerReverseQuestions),
+                keyEquivalent: "r"
+            )
+            reverseQuestionsItem.keyEquivalentModifierMask = [.command, .shift]
+            reverseQuestionsItem.target = self
+            menu.addItem(reverseQuestionsItem)
+
             menu.addItem(NSMenuItem.separator())
             let captureItem = NSMenuItem(
                 title: "开始采集",
@@ -1950,6 +1979,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func submitVoiceQuestion() {
         panel?.orderFrontRegardless()
         answerMonitor.submitVoiceQuestion()
+    }
+    @objc private func triggerReverseQuestions() {
+        panel?.orderFrontRegardless()
+        answerMonitor.triggerReverseQuestions()
     }
     @objc private func toggleAutoHideWhenIdle() {
         autoHideWhenIdle.toggle()

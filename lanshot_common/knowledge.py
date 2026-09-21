@@ -24,6 +24,8 @@ DEFAULT_CONFIG_PATH = Path(
 MAX_CONFIG_BYTES = 32 * 1024
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_QUERY_CHARS = 12_000
+MAX_RETRIEVAL_CANDIDATES = 20
+MAX_CANDIDATE_CONTEXT_CHARS = 30_000
 IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{2,127}")
 
 
@@ -225,6 +227,32 @@ class KnowledgeClient:
         return normalized[:half] + "\n[...content shortened...]\n" + normalized[-half:]
 
     def search(self, query: str) -> KnowledgeSearchResult:
+        return self._search(
+            query,
+            max_hits=self.config.max_hits,
+            max_context_chars=self.config.max_context_chars,
+        )
+
+    def search_candidates(self, query: str) -> KnowledgeSearchResult:
+        """Read the provider\'s wider result set for local coverage selection.
+
+        This is still one remote Search request. The provider service decides how
+        many nodes it returns, up to its configured maximum; LanShot only avoids
+        truncating those candidates to the final prompt limit too early.
+        """
+        return self._search(
+            query,
+            max_hits=MAX_RETRIEVAL_CANDIDATES,
+            max_context_chars=MAX_CANDIDATE_CONTEXT_CHARS,
+        )
+
+    def _search(
+        self,
+        query: str,
+        *,
+        max_hits: int,
+        max_context_chars: int,
+    ) -> KnowledgeSearchResult:
         normalized = self.normalize_query(query)
         if not normalized:
             return KnowledgeSearchResult(status="empty", query="")
@@ -278,7 +306,11 @@ class KnowledgeClient:
                 "invalid_response",
                 elapsed_ms=self._elapsed(started),
             )
-        hits = self._parse_hits(nodes)
+        hits = self._parse_hits(
+            nodes,
+            max_hits=max_hits,
+            max_context_chars=max_context_chars,
+        )
         status = "hit" if hits else "empty"
         return KnowledgeSearchResult(
             status=status,
@@ -289,7 +321,13 @@ class KnowledgeClient:
             request_id=str(result.get("request_id", ""))[:128],
         )
 
-    def _parse_hits(self, nodes: list[Any]) -> list[KnowledgeHit]:
+    def _parse_hits(
+        self,
+        nodes: list[Any],
+        *,
+        max_hits: int,
+        max_context_chars: int,
+    ) -> list[KnowledgeHit]:
         hits: list[KnowledgeHit] = []
         used_chars = 0
         for raw in nodes:
@@ -309,7 +347,7 @@ class KnowledgeClient:
             if score is not None and score < self.config.min_score:
                 continue
             text = text.strip()
-            remaining = self.config.max_context_chars - used_chars
+            remaining = max_context_chars - used_chars
             if remaining <= 0:
                 break
             if len(text) > remaining:
@@ -324,7 +362,7 @@ class KnowledgeClient:
             )
             hits.append(hit)
             used_chars += len(text)
-            if len(hits) >= self.config.max_hits:
+            if len(hits) >= max_hits:
                 break
         return hits
 
@@ -366,6 +404,13 @@ class KnowledgeService:
             return False
 
     def search(self, query: str) -> KnowledgeSearchResult:
+        return self._search(query, candidates=False)
+
+    def search_candidates(self, query: str) -> KnowledgeSearchResult:
+        """One remote request, retaining up to 20 candidates for local reranking."""
+        return self._search(query, candidates=True)
+
+    def _search(self, query: str, *, candidates: bool) -> KnowledgeSearchResult:
         try:
             config = KnowledgeConfig.load(self.config_path)
         except FileNotFoundError:
@@ -377,11 +422,12 @@ class KnowledgeService:
         try:
             if not self._api_key:
                 self._api_key = self.api_key_provider().strip()
-            result = KnowledgeClient(
+            client = KnowledgeClient(
                 config,
                 self._api_key,
                 opener=self.opener,
-            ).search(query)
+            )
+            result = client.search_candidates(query) if candidates else client.search(query)
             if result.error_code in ("http_401", "http_403"):
                 self._api_key = ""
             return result
@@ -405,7 +451,12 @@ def format_knowledge_context(result: KnowledgeSearchResult) -> str:
     return "\n\n".join(blocks)
 
 
-def ground_text(original: str, result: KnowledgeSearchResult) -> str:
+def ground_text(
+    original: str,
+    result: KnowledgeSearchResult,
+    *,
+    coverage: dict[str, Any] | None = None,
+) -> str:
     context = format_knowledge_context(result)
     if not context:
         if result.status in ("empty", "failed") and result.query.strip():
@@ -430,6 +481,19 @@ def ground_text(original: str, result: KnowledgeSearchResult) -> str:
                 "的项目，不得擅自切换成同名公开产品的解释。"
             )
         return original
+    missing_groups = []
+    if isinstance(coverage, dict):
+        value = coverage.get("missing_groups", [])
+        if isinstance(value, list):
+            missing_groups = [str(item)[:80] for item in value if isinstance(item, str)]
+    coverage_boundary = ""
+    if missing_groups:
+        coverage_boundary = (
+            "\n【本轮证据覆盖边界，不得在最终答案中暴露】\n"
+            "本次检索没有直接证据覆盖这些事实组：" + "、".join(missing_groups) + "。\n"
+            "这些缺失组不得使用‘当前实现’‘我做了’等项目事实口吻，也不得补替代数字、"
+            "默认次数、参数值或看似合理的区间。可以回答稳定的通用机制，但必须与项目已确认事实分开。\n"
+        )
     return (
         f"{original}\n\n"
         "【私有知识库参考规则】\n"
@@ -440,6 +504,7 @@ def ground_text(original: str, result: KnowledgeSearchResult) -> str:
         "‘需要改进’、‘候选方案’、‘应该’、‘未来设计’、‘未实现’等描述只能作为建议；"
         "不能改写成‘当前系统已经’。概述与具体实现限制冲突时，保留明确的限制，"
         "不要自行补出缺失流程。代码摘录不自动等于端到端运行验证。\n"
+        f"{coverage_boundary}"
         "BEGIN_UNTRUSTED_KNOWLEDGE\n"
         f"{context}\n"
         "END_UNTRUSTED_KNOWLEDGE\n"

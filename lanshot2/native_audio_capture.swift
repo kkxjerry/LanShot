@@ -31,12 +31,52 @@ func loadBailianAPIKey() throws -> String {
     return value
 }
 
+final class TimelineWriter: @unchecked Sendable {
+    private let url: URL
+    private let lock = NSLock()
+
+    init(url: URL) {
+        self.url = url
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+    }
+
+    func append(role: String, text: String, timestamp: Double = Date().timeIntervalSince1970) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let record: [String: Any] = [
+            "t": timestamp,
+            "role": role,
+            "text": trimmed
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: record),
+              var line = String(data: data, encoding: .utf8) else {
+            return
+        }
+        line.append("\n")
+        guard let lineData = line.data(using: .utf8) else { return }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        if let handle = try? FileHandle(forWritingTo: url) {
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: lineData)
+            try? handle.close()
+        }
+    }
+}
+
 final class QwenRealtimeTranscriber: @unchecked Sendable {
     private static let model = "qwen-audio-3.0-asr-flash-streaming"
     private static let endpoint = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
     private let outputURL: URL
     private let errorURL: URL
     private let apiKey: String
+    private let role: String
+    private let timelineWriter: TimelineWriter?
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16,
         sampleRate: 16_000,
@@ -56,10 +96,17 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
     private var heartbeatTask: Task<Void, Never>?
     private var lastAudioAt = Date().timeIntervalSince1970
 
-    init(outputURL: URL, apiKey: String) {
+    init(
+        outputURL: URL,
+        apiKey: String,
+        role: String = "interviewer",
+        timelineWriter: TimelineWriter? = nil
+    ) {
         self.outputURL = outputURL
         self.errorURL = outputURL.deletingPathExtension().appendingPathExtension("errors.log")
         self.apiKey = apiKey
+        self.role = role
+        self.timelineWriter = timelineWriter
         try? FileManager.default.removeItem(at: outputURL)
         try? FileManager.default.removeItem(at: errorURL)
         try? "".write(to: outputURL, atomically: true, encoding: .utf8)
@@ -91,8 +138,8 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
                     "format": "pcm",
                     "sample_rate": 16_000,
                     "language_hints": ["zh"],
-                    "semantic_punctuation_enabled": false,
-                    "max_sentence_silence": 500,
+                    "semantic_punctuation_enabled": true,
+                    "max_sentence_silence": 800,
                     "heartbeat": true,
                 ],
                 "input": [:] as [String: Any],
@@ -231,8 +278,10 @@ final class QwenRealtimeTranscriber: @unchecked Sendable {
             let text = sentence["text"] as? String ?? ""
             if sentence["sentence_end"] as? Bool == true {
                 currentSegments.removeValue(forKey: sentenceID)
-                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    completedSegments[sentenceID] = text
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    completedSegments[sentenceID] = trimmed
+                    timelineWriter?.append(role: role, text: trimmed)
                 }
             } else {
                 currentSegments[sentenceID] = text
@@ -562,13 +611,20 @@ struct LanShotAudioCapture {
             try? FileManager.default.removeItem(
                 at: outputDirectory.appendingPathComponent("interviewer.m4a")
             )
+            let timelineURL = outputDirectory.appendingPathComponent("timeline.jsonl")
+            let timelineWriter = TimelineWriter(url: timelineURL)
+
             let interviewerTranscriber = QwenRealtimeTranscriber(
                 outputURL: outputDirectory.appendingPathComponent("interviewer.txt"),
-                apiKey: apiKey
+                apiKey: apiKey,
+                role: "interviewer",
+                timelineWriter: timelineWriter
             )
             let microphoneTranscriber = QwenRealtimeTranscriber(
                 outputURL: outputDirectory.appendingPathComponent("me.txt"),
-                apiKey: apiKey
+                apiKey: apiKey,
+                role: "me",
+                timelineWriter: timelineWriter
             )
             try await interviewerTranscriber.start()
             try await microphoneTranscriber.start()
@@ -617,6 +673,7 @@ struct LanShotAudioCapture {
             print("me: \(outputDirectory.appendingPathComponent("me.wav").path)")
             print("interviewer transcript: \(outputDirectory.appendingPathComponent("interviewer.txt").path)")
             print("my transcript: \(outputDirectory.appendingPathComponent("me.txt").path)")
+            print("timeline: \(timelineURL.path)")
             fflush(stdout)
 
             await waitForStopSignal()

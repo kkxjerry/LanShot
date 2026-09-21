@@ -27,7 +27,7 @@ cd LanShot
 open install.command
 ```
 
-`install.command` 会检查环境、选择正确的 Python、将百炼 API Key 安全写入当前 Mac 的钥匙串、编译音频程序和悬浮窗，并启动语音模式到待机状态。API Key 不会写入仓库或配置文件。面试回答默认使用百炼 `glm-5.3`，采用低推理强度。
+`install.command` 会检查环境、选择正确的 Python、将百炼 API Key 安全写入当前 Mac 的钥匙串、编译音频程序和悬浮窗，并启动语音模式到待机状态。API Key 不会写入仓库或配置文件。面试回答默认使用百炼 `deepseek-v4.1-flash`，关闭 thinking，以降低实时答题延迟并保持固定回归中的答案覆盖稳定性。
 
 首次点击“开始采集”时，需要在 macOS“隐私与安全性”中允许：
 

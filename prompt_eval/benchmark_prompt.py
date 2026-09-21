@@ -243,7 +243,7 @@ def answer_case(client, service: KnowledgeService, case: dict[str, Any], prompt:
         case.get("previous_question", ""),
     )
     grounded = ground_text(route.generation_input(), knowledge, coverage=audit)
-    effective_prompt = generation_prompt(prompt, route)
+    effective_prompt = generation_prompt(prompt, route, coverage=audit)
     started = time.monotonic()
     answer = client.ask_stream(grounded, effective_prompt, history=[])
     timing = dict(getattr(client, "last_timing", {}))

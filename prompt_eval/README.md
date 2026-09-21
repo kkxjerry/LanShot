@@ -9,9 +9,10 @@
 - voice_question_prompt_deepseek_v1.txt：第一版候选。
 - voice_question_prompt_deepseek_v2.txt：增加“只用当前问题直接相关证据”和输出预算。
 - voice_question_prompt_deepseek_v3.txt：增加项目事实与通用设计、不同 Retry 层级的区分。
-- voice_question_prompt_deepseek_v4.txt：当前推荐候选。补充截断数据、状态版本、跨层并发和分布式锁等通用边界。
+- voice_question_prompt_deepseek_v4.txt：上一版稳定候选。
+- voice_question_prompt_deepseek_v5.txt：当前生产候选。增加本轮作答槽位、Coverage 证据槽位，以及比较题、性能题、评测题、高压交付和分布式并发的完整性规则。
 
-生产中的 lanshot2/voice_question_prompt.txt 暂未覆盖。
+生产中的 `lanshot2/voice_question_prompt.txt` 已同步 v5。
 
 ## 三层测试
 
@@ -32,7 +33,7 @@ python3 prompt_eval/benchmark_prompt.py --retrieval-only --ids 06,07,08,09,10
 python3 prompt_eval/benchmark_prompt.py \
   --provider bailian \
   --model deepseek-v4.1-flash \
-  --candidate-prompt prompt_eval/voice_question_prompt_deepseek_v4.txt \
+  --candidate-prompt prompt_eval/voice_question_prompt_deepseek_v5.txt \
   --variant candidate \
   --thinking off \
   --skip-judge
@@ -42,7 +43,7 @@ python3 prompt_eval/benchmark_prompt.py \
 python3 prompt_eval/benchmark_prompt.py \
   --provider deepseek \
   --model deepseek-flash \
-  --candidate-prompt prompt_eval/voice_question_prompt_deepseek_v4.txt \
+  --candidate-prompt prompt_eval/voice_question_prompt_deepseek_v5.txt \
   --variant candidate \
   --thinking off
 
@@ -89,7 +90,7 @@ account=DEEPSEEK_API_KEY
 
 ## 当前推荐
 
-系统 Prompt 使用 v4，动态输出预算继续由 lanshot_common/interview_rag.py 的 generation_prompt 注入。多子问题除了字符上限，还限制总句数，DeepSeek 的长度服从度明显更好。
+系统 Prompt 使用 v5，动态输出预算和内部覆盖 checklist 由 `lanshot_common/interview_rag.py` 的 `generation_prompt` 注入。Checklist 同时包含面试官明确子问题和 Coverage Merge 已拿到的独立证据主题，不增加额外 LLM 调用。
 
 不要把 12 题正确答案直接写进 System Prompt。System Prompt 负责回答纪律；项目事实由 RAG 提供。否则 Prompt 会越来越长，而且代码或实验版本变化后会迅速过期。
 
@@ -106,4 +107,4 @@ account=DEEPSEEK_API_KEY
 - `deepseek-v4.1-flash + thinking off`：平均 77.83，平均完整耗时约 3.82 秒。
 - `deepseek-v4-pro-0813 + thinking off`：平均 77.58，平均完整耗时约 4.51 秒。
 
-当前优先推荐 `deepseek-v4.1-flash + thinking off + Prompt v4` 作为实时默认候选；这是单轮基准结论，正式切换前仍应重复多轮。
+当前生产已切换为 `deepseek-v4.1-flash + thinking off + Prompt v5`。v5 固定 12 题三轮总体均分 90.72；生产 `submit_snapshot()` 完整 12 题主链单轮为 95.67，12/12 成功。完整记录见 `v5生产接线与主链回归_2026-09-20.md`。

@@ -165,7 +165,67 @@ def route_question(system_text: str, microphone_text: str, *, previous_question:
     return QuestionRoute(kind, project, current, query, previous, microphone, reason)
 
 
-def generation_prompt(base: str, route: QuestionRoute) -> str:
+_COVERAGE_GROUP_LABELS = {
+    "memory_runtime": "长短期记忆运行机制",
+    "memory_trust": "记忆写入后的信任与验证",
+    "tool_waves": "多工具并发与资源冲突",
+    "file_version": "文件版本检查与并发边界",
+    "command_guard": "命令安全边界",
+    "transport_retry": "模型请求重试参数与边界",
+    "stagnation": "停滞检测与停止条件",
+    "plan_failure": "Plan失败后的重规划与结果复用",
+    "team_retry": "Team审查后的局部返工",
+    "planning": "Planner、DAG校验调度与ReAct分工",
+    "multi_edit": "多文件编辑提交与部分成功边界",
+    "workflow": "端到端处理主线",
+    "chunking": "切块参数",
+    "retrieval": "检索通道与融合",
+    "embedding": "Embedding选择与贡献",
+    "metrics": "评测指标口径",
+    "rerank": "重排收益与回退边界",
+    "matryoshka": "Matryoshka与向量维度",
+}
+
+
+def _question_answer_targets(question: str) -> tuple[str, ...]:
+    targets: list[str] = []
+    for piece in re.split(r"[？?；;]", question):
+        cleaned = re.sub(r"\s+", " ", piece).strip(" ，,:：。.!！")
+        if len(cleaned) < 4:
+            continue
+        targets.append(cleaned[:140])
+    return tuple(targets[:6])
+
+
+def _coverage_answer_focus(coverage: dict | None) -> tuple[str, ...]:
+    if not isinstance(coverage, dict):
+        return ()
+    assignments = coverage.get("group_assignments")
+    if not isinstance(assignments, dict):
+        return ()
+    output: list[str] = []
+    for name, value in assignments.items():
+        if not isinstance(value, dict) or not value.get("covered"):
+            continue
+        label = _COVERAGE_GROUP_LABELS.get(name, name)
+        terms = value.get("matched_terms")
+        if isinstance(terms, list):
+            clean_terms = [str(term)[:32] for term in terms[:4] if str(term).strip()]
+        else:
+            clean_terms = []
+        if clean_terms:
+            output.append(f"{label}（证据词：{' / '.join(clean_terms)}）")
+        else:
+            output.append(label)
+    return tuple(output[:7])
+
+
+def generation_prompt(
+    base: str,
+    route: QuestionRoute,
+    *,
+    coverage: dict | None = None,
+) -> str:
     expanded = re.search(r"怎么|如何|为什么|代价|过程|取舍|具体|分别", route.current)
     fact = re.search(r"多少|几个|几种|是不是|是[^？?]{0,80}吗|是什么指标|准确率吗", route.current)
     subquestions = max(1, len(re.findall(r"[？?]", route.current)))
@@ -193,7 +253,28 @@ def generation_prompt(base: str, route: QuestionRoute) -> str:
             "直接讲当前问题需要的机制和取舍；达到上限时先删除例子、旁支和重复结论。"
             "不要另加总结段。"
         )
-    return base + "\n\n本轮输出约束：\n" + constraint
+    checklist: list[str] = []
+    targets = _question_answer_targets(route.current)
+    if len(targets) >= 2:
+        checklist.append(
+            "面试官本轮明确问点：" + "；".join(
+                f"{index}.{target}" for index, target in enumerate(targets, start=1)
+            )
+        )
+    focus = _coverage_answer_focus(coverage)
+    if focus:
+        checklist.append(
+            "本轮检索已经拿到这些独立证据主题：" + "；".join(focus)
+        )
+    coverage_note = ""
+    if checklist:
+        coverage_note = (
+            "\n\n本轮内部覆盖检查（不得原样输出、不得变成列表）：\n"
+            + "\n".join(checklist)
+            + "\n最终答案完成前逐项检查：每个明确问点都必须有直接回答；"
+            "项目题中已拿到的独立证据主题不要无故漏掉。若字数冲突，先删例子、背景和重复解释。"
+        )
+    return base + coverage_note + "\n\n本轮输出约束：\n" + constraint
 
 
 @lru_cache(maxsize=1)

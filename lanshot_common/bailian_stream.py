@@ -109,7 +109,7 @@ def ask_stream(client, question: str, prompt: str, history=None, *, on_update=No
         raise RuntimeError("百炼返回了无效的流式编码") from error
     answer = "".join(parts).strip()
     client.last_timing = {
-        "provider": "bailian_glm", "streaming": True,
+        "provider": "bailian_compatible", "streaming": True,
         "thinking": enable_thinking,
         "thinking_level": reasoning_effort if enable_thinking else "none",
         "first_visible_ms": first_visible,

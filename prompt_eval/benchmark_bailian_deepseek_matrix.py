@@ -96,7 +96,7 @@ def prepare_cases(
                 "knowledge": knowledge,
                 "knowledge_audit": audit,
                 "question": ground_text(route.generation_input(), knowledge, coverage=audit),
-                "prompt": generation_prompt(prompt, route),
+                "prompt": generation_prompt(prompt, route, coverage=audit),
             }
         )
     return prepared

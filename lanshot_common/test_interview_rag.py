@@ -152,6 +152,33 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("每个子问题用1到2句回答", deep)
         self.assertNotIn("硬上限180", deep)
 
+    def test_generation_prompt_adds_internal_question_and_evidence_checklist(self):
+        route = route_question(
+            "CODA最大工程难点是什么？多文件修改怎么防止改到一半出错？",
+            "",
+        )
+        prompt = generation_prompt(
+            "基础提示",
+            route,
+            coverage={
+                "group_assignments": {
+                    "planning": {
+                        "covered": True,
+                        "matched_terms": ["Planner", "DAG", "ReAct"],
+                    },
+                    "multi_edit": {
+                        "covered": True,
+                        "matched_terms": ["multi_edit", "FileMutation"],
+                    },
+                }
+            },
+        )
+        self.assertIn("本轮内部覆盖检查", prompt)
+        self.assertIn("面试官本轮明确问点", prompt)
+        self.assertIn("Planner、DAG校验调度与ReAct分工", prompt)
+        self.assertIn("多文件编辑提交与部分成功边界", prompt)
+        self.assertIn("不得原样输出", prompt)
+
     def test_filter_does_not_rewrite_numeric_facts(self):
         text = "Hit@10=98.09%，不是答案准确率。"
         result = KnowledgeSearchResult("hit", "RAG", hits=(KnowledgeHit(text, .9, "EnterpriseRAG.md"),))

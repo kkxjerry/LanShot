@@ -101,7 +101,7 @@ class LanShot2Tests(unittest.TestCase):
         self.assertIn("preferences.widthRange.lowerBound", source)
         self.assertNotIn("let panelSize = followLatest", source)
 
-    def test_voice_question_uses_text_only_glm_request(self):
+    def test_voice_question_uses_text_only_deepseek_request(self):
         service = load_audio_service()
         response = {"choices": [{"message": {"content": "这是回答"}}]}
         opener = mock.Mock(return_value=FakeResponse(json.dumps(response).encode()))
@@ -117,17 +117,17 @@ class LanShot2Tests(unittest.TestCase):
         )
         request = opener.call_args.args[0]
         payload = json.loads(request.data)
-        self.assertEqual(payload["model"], "glm-5.3")
-        self.assertTrue(payload["enable_thinking"])
+        self.assertEqual(payload["model"], "deepseek-v4.1-flash")
+        self.assertFalse(payload["enable_thinking"])
         self.assertEqual(payload["reasoning_effort"], "low")
         self.assertEqual(payload["messages"][1], {"role": "user", "content": "上一题"})
         self.assertEqual(payload["messages"][2], {"role": "assistant", "content": "上一题答案"})
         self.assertEqual(payload["messages"][3], {"role": "user", "content": "什么是 GIL？"})
         self.assertEqual(request.headers["Authorization"], "Bearer secret-key")
         self.assertEqual(opener.call_args.kwargs["timeout"], 30)
-        self.assertEqual(client.last_timing["provider"], "bailian_glm")
+        self.assertEqual(client.last_timing["provider"], "bailian_compatible")
 
-    def test_default_question_client_uses_glm_without_loading_gemini_key(self):
+    def test_default_question_client_uses_deepseek_without_loading_gemini_key(self):
         service = load_audio_service()
         with (
             mock.patch.object(service, "load_api_key", return_value="bailian-key"),
@@ -136,7 +136,8 @@ class LanShot2Tests(unittest.TestCase):
             client = service.default_question_client()
 
         self.assertIsInstance(client, service.VoiceQuestionClient)
-        self.assertEqual(client.model, "glm-5.3")
+        self.assertEqual(client.model, "deepseek-v4.1-flash")
+        self.assertFalse(client.enable_thinking)
         google_key.assert_not_called()
 
     def test_macos_keychain_wins_over_stale_environment_keys(self):
@@ -253,10 +254,13 @@ class LanShot2Tests(unittest.TestCase):
 
     def test_voice_prompt_requires_short_spoken_answer(self):
         prompt = (ROOT / "voice_question_prompt.txt").read_text(encoding="utf-8")
-        self.assertIn("可以用自己的话说出来的中文回答", prompt)
-        self.assertIn("第一段用一到两句话直接给出核心答案", prompt)
-        self.assertIn("不使用 Markdown 标题、加粗", prompt)
-        self.assertIn("没有依据时不能补出候选人的经历", prompt)
+        self.assertIn("让候选人一眼抓住结论，并能自然复述", prompt)
+        self.assertIn("第一句或前两句直接回答核心结论", prompt)
+        self.assertIn("不要使用 Markdown 标题、列表、表格、加粗", prompt)
+        self.assertIn("资料没有支持时，不得根据行业常见做法补成项目事实", prompt)
+        self.assertIn("成功率不要只看格式合法", prompt)
+        self.assertIn("GQA/MQA", prompt)
+        self.assertIn("高压交付、遗留代码或上线风险", prompt)
 
     def test_google_aim_question_client_instantiation_and_query_extraction(self):
         service = load_audio_service()
@@ -411,6 +415,69 @@ class LanShot2Tests(unittest.TestCase):
                 for line in (output.parent / "conversation_history.jsonl").read_text().splitlines()
             ]
             self.assertEqual(history[-1]["knowledge"]["hit_count"], 1)
+
+    def test_voice_submission_passes_coverage_checklist_into_generation_prompt(self):
+        service = load_audio_service()
+        from lanshot_common.knowledge import KnowledgeHit, KnowledgeSearchResult
+
+        class StubClient:
+            def ask(self, question, prompt, history=None):
+                self.question = question
+                self.prompt = prompt
+                self.history = history
+                return "完整答案"
+
+        class StubKnowledge:
+            def search_candidates(self, query):
+                return KnowledgeSearchResult(
+                    status="hit",
+                    query=query,
+                    hits=(
+                        KnowledgeHit(
+                            "Planner 生成 DAG，程序做依赖检查、环检测和调度，短任务保留 ReAct。",
+                            0.95,
+                            "CODA规划.md",
+                        ),
+                        KnowledgeHit(
+                            "multi_edit 先准备 FileMutation，再逐文件提交，存在 partial success 边界。",
+                            0.93,
+                            "CODA多文件.md",
+                        ),
+                        KnowledgeHit(
+                            "expected_sha256 是版本前置检查，os.replace 只保证单文件替换，仍有 TOCTOU。",
+                            0.92,
+                            "CODA版本.md",
+                        ),
+                    ),
+                    request_id="coverage-checklist",
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "audio"
+            output.mkdir()
+            (output / "interviewer.txt").write_text(
+                "你这个 CODA 最大工程难点是什么？多文件修改怎么防止改到一半出错？",
+                encoding="utf-8",
+            )
+            (output / "capture_session_id.txt").write_text("coverage-main-path\n", encoding="utf-8")
+            snapshot = service.prepare_question_snapshot(output)
+            client = StubClient()
+
+            self.assertTrue(
+                service.submit_snapshot(
+                    output,
+                    snapshot,
+                    client=client,
+                    knowledge_service=StubKnowledge(),
+                )
+            )
+            self.assertEqual(client.history, [])
+            self.assertIn("本轮内部覆盖检查", client.prompt)
+            self.assertIn("面试官本轮明确问点", client.prompt)
+            self.assertIn("Planner、DAG校验调度与ReAct分工", client.prompt)
+            self.assertIn("多文件编辑提交与部分成功边界", client.prompt)
+            self.assertIn("文件版本检查与并发边界", client.prompt)
+            self.assertNotIn("本轮内部覆盖检查", client.question)
 
     def test_stop_only_saves_but_submit_stops_and_calls_model(self):
         service = load_audio_service()

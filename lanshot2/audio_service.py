@@ -46,7 +46,7 @@ OVERLAY_EXECUTABLE = OVERLAY_APP / "Contents/MacOS/CaptureExclusionDemo"
 DEFAULT_OUTPUT = Path.home() / "Library/Application Support/LanShot2/audio"
 VOICE_PROMPT = ROOT / "voice_question_prompt.txt"
 BAILIAN_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-VOICE_MODEL = "glm-5.3"
+VOICE_MODEL = "deepseek-v4.1-flash"
 GEMINI_MODEL = "gemini-3.8-flash"
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -409,7 +409,7 @@ class VoiceQuestionClient:
         opener=urllib.request.urlopen,
         url: str = BAILIAN_URL,
         model: str = VOICE_MODEL,
-        enable_thinking: bool = True,
+        enable_thinking: bool = False,
         reasoning_effort: str = "low",
     ) -> None:
         if reasoning_effort not in ("low", "high", "max"):
@@ -463,7 +463,7 @@ class VoiceQuestionClient:
         if not isinstance(answer, str) or not answer.strip():
             raise RuntimeError("大模型没有返回答案")
         self.last_timing = {
-            "provider": "bailian_glm",
+            "provider": "bailian_compatible",
             "streaming": False,
             "thinking": self.enable_thinking,
             "thinking_level": self.reasoning_effort if self.enable_thinking else "none",
@@ -870,7 +870,7 @@ def submit_snapshot(
         + "\n",
     )
     try:
-        prompt = generation_prompt(get_voice_prompt(), route)
+        prompt = generation_prompt(get_voice_prompt(), route, coverage=selection)
         active_client = client or default_question_client()
         grounded_question = ground_text(route.generation_input(), knowledge, coverage=selection)
         # Generated answers are not verified history. Only the previous original
